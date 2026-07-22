@@ -1,0 +1,11 @@
+"""Константы игры."""
+
+SCREEN_WIDTH = 80
+SCREEN_HEIGHT = 50
+
+# Цвета
+COLOR_WALL = (45, 50, 55)
+COLOR_FLOOR = (25, 30, 35)
+COLOR_TEXT = (150, 160, 170)
+COLOR_HP = (200, 80, 80)
+COLOR_SAN = (180, 50, 50)
