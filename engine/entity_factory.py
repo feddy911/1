@@ -10,26 +10,39 @@ class Player:
         self.id = class_data['id']
         self.class_name = class_data['name']
         self.name = class_data['name']
-        self.hp = class_data['base_hp']
-        self.max_hp = class_data['base_hp']
-        self.san = class_data['base_san']
-        self.max_san = class_data['base_san']
+
+        json_stats = class_data.get('base_stats') or {}
+        if isinstance(json_stats, str):
+            json_stats = {}
+
         self.stats = {
-            'STR': class_data['base_str'],
-            'DEX': class_data['base_dex'],
-            'CON': class_data['base_con'],
-            'INT': class_data['base_int'],
-            'CHA': class_data['base_cha']
+            'STR': int(json_stats.get('STR', class_data.get('base_str', 10))),
+            'DEX': int(json_stats.get('DEX', class_data.get('base_dex', 10))),
+            'CON': int(json_stats.get('CON', class_data.get('base_con', 10))),
+            'INT': int(json_stats.get('INT', class_data.get('base_int', 10))),
+            'CHA': int(json_stats.get('CHA', class_data.get('base_cha', 10))),
         }
+
+        con_mod = (self.stats['CON'] - 10) // 2
+        str_mod = (self.stats['STR'] - 10) // 2
+        dex_mod = (self.stats['DEX'] - 10) // 2
+
+        base_hp = int(class_data.get('base_hp') or 10)
+        self.max_hp = max(1, base_hp + con_mod)
+        self.hp = self.max_hp
+        self.san = int(class_data.get('base_san') or class_data.get('base_sanity') or 100)
+        self.max_san = self.san
+
         self.x = 0
         self.y = 0
         self.symbol = '@'
         self.color = libtcodpy.Color(220, 220, 230)
         self.inventory: List[Item] = []
-        self.starting_item_ids = []
+        starting = class_data.get('starting_items') or []
+        self.starting_item_ids = list(starting) if isinstance(starting, list) else []
         self.damage_die = '1d6'
-        self.attack_bonus = 2
-        self.armor_class = 12
+        self.attack_bonus = 2 + str_mod
+        self.armor_class = 10 + dex_mod
     
     def is_alive(self) -> bool:
         return self.hp > 0
@@ -48,8 +61,6 @@ class Player:
         self.san -= amount
         if self.san < 0:
             self.san = 0
-        if self.san <= 0:
-            self.hp = 0
     
     def gain_san(self, amount: int):
         self.san += amount
@@ -75,6 +86,9 @@ class Character:
         self.hp = data['hp']
         self.max_hp = data['hp']
         self.damage_die = data['damage_die']
+        self.attack_bonus = data.get('attack_bonus', 0)
+        self.armor_class = data.get('armor_class', 10)
+        self.sanity_damage = data.get('sanity_damage', 0)
         self.stats = {
             'STR': data['str'],
             'DEX': data['dex'],

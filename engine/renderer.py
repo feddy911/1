@@ -2,7 +2,7 @@
 import tcod
 import random
 from tcod import libtcodpy
-from engine.constants import SCREEN_WIDTH, SCREEN_HEIGHT
+from engine.constants import LEGEND_WIDTH, SCREEN_HEIGHT, SCREEN_WIDTH, TILE_LEGEND
 from typing import List, Dict
 import math
 
@@ -16,6 +16,10 @@ COLOR_SANITY = libtcodpy.Color(180, 50, 50)
 COLOR_HP = libtcodpy.Color(200, 80, 80)
 COLOR_DIALOGUE = libtcodpy.Color(220, 200, 150)
 COLOR_UNKNOWN = libtcodpy.Color(0, 0, 0)  # Неизвестная область
+COLOR_VOID_FG = libtcodpy.Color(42, 44, 50)
+COLOR_VOID_BG = libtcodpy.Color(10, 11, 14)
+# Глифы вне ASCII, которые шрифт tcod всё же рисует.
+_ALLOWED_UNICODE_GLYPHS = frozenset('≈±§¶')
 
 
 class Camera:
@@ -55,9 +59,10 @@ class Renderer:
         self.screen_height = screen_height
         self.console = tcod.console.Console(screen_width, screen_height, order="F")
         
-        # HUD занимает 8 строк снизу
-        self.map_width = screen_width
+        # HUD занимает 8 строк снизу; легенда символов — справа.
+        self.map_width = screen_width - LEGEND_WIDTH
         self.map_height = screen_height - 8
+        self.legend_width = LEGEND_WIDTH
         
         # Камера
         self.camera = Camera(self.map_width, self.map_height)
@@ -91,12 +96,22 @@ class Renderer:
             'D': {'fg': '#dc8c40', 'bg': '#8c6432'},
             'd': {'fg': '#ff5050', 'bg': '#a03232'},
             'S': {'fg': '#64dcff', 'bg': '#3c8ca0'},
+            's': {'fg': '#5088a0', 'bg': '#2c5a68'},
+            'E': {'fg': '#64dcff', 'bg': '#3c8ca0'},
             '*': {'fg': '#fff064', 'bg': '#b4a032'},
             '!': {'fg': '#78ff78', 'bg': '#3ca03c'},
             ')': {'fg': '#78ff78', 'bg': '#3ca03c'},
+            '≈': {'fg': '#ffdc64', 'bg': '#a08c32'},
             '~': {'fg': '#ffdc64', 'bg': '#a08c32'},
             '&': {'fg': '#ff7878', 'bg': '#a03c3c'},
             '@': {'fg': '#dcdce6', 'bg': '#646478'},
+            'W': {'fg': '#aaccff', 'bg': '#6688aa'},
+            'B': {'fg': '#6a5a4a', 'bg': '#3a322c'},
+            'T': {'fg': '#8a6a40', 'bg': '#4a3828'},
+            'C': {'fg': '#7a6048', 'bg': '#3a3028'},
+            'H': {'fg': '#5a5048', 'bg': '#322c28'},
+            'O': {'fg': '#6a5840', 'bg': '#3a3228'},
+            '=': {'fg': '#1a3048', 'bg': '#0c1828'},
         }
         self.tile_colors_explored = {
             '#': {'fg': '#1e2023', 'bg': '#1e2023'},
@@ -105,12 +120,22 @@ class Renderer:
             'D': {'fg': '#6e5028', 'bg': '#463219'},
             'd': {'fg': '#822828', 'bg': '#501919'},
             'S': {'fg': '#326e82', 'bg': '#1e4650'},
+            's': {'fg': '#284858', 'bg': '#142830'},
+            'E': {'fg': '#326e82', 'bg': '#1e4650'},
             '*': {'fg': '#827832', 'bg': '#5a5019'},
             '!': {'fg': '#3c823c', 'bg': '#1e501e'},
             ')': {'fg': '#3c823c', 'bg': '#1e501e'},
+            '≈': {'fg': '#826e32', 'bg': '#504619'},
             '~': {'fg': '#826e32', 'bg': '#504619'},
             '&': {'fg': '#823c3c', 'bg': '#501e1e'},
             '@': {'fg': '#646478', 'bg': '#32323c'},
+            'W': {'fg': '#445566', 'bg': '#223344'},
+            'B': {'fg': '#3a322c', 'bg': '#1e1a16'},
+            'T': {'fg': '#4a3828', 'bg': '#241c14'},
+            'C': {'fg': '#3a3028', 'bg': '#1e1814'},
+            'H': {'fg': '#322c28', 'bg': '#1a1614'},
+            'O': {'fg': '#3a3228', 'bg': '#1e1a14'},
+            '=': {'fg': '#0c1828', 'bg': '#060c14'},
         }
     
     def _parse_hex_color(self, hex_str: str) -> libtcodpy.Color:
@@ -177,6 +202,13 @@ class Renderer:
             for y in range(SCREEN_HEIGHT):
                 for x in range(SCREEN_WIDTH):
                     self.console.bg[x, y] = libtcodpy.Color(20, 20, 20)
+
+        # Край карты (57 клеток vs окно 60) и туман войны — не чёрный «пол».
+        for sy in range(self.map_height):
+            for sx in range(self.map_width):
+                self.console.print(
+                    sx, sy, ':', fg=COLOR_VOID_FG, bg=COLOR_VOID_BG
+                )
         
         # Искажение карты
         for y in range(map_height):
@@ -195,6 +227,8 @@ class Renderer:
                 # Определяем уровень видимости
                 is_visible = self.fov_system and self.fov_system.is_visible(x, y)
                 is_explored = self.fov_system and self.fov_system.is_explored(x, y)
+                if not is_visible and not is_explored:
+                    continue
                 
                 # Применяем искажения
                 if distortion_level > 0:
@@ -256,9 +290,24 @@ class Renderer:
             if not (hasattr(entity, 'type') and entity.type == 'note'):
                 self._draw_entity(entity)
     
+    def _safe_glyph(self, symbol) -> str:
+        """Символ, который шрифт терминала точно нарисует."""
+        if not symbol:
+            return '&'
+        ch = str(symbol)[0]
+        code = ord(ch)
+        if 33 <= code <= 126 or ch in _ALLOWED_UNICODE_GLYPHS:
+            return ch
+        return '&'
+
     def _draw_entity(self, entity):
         """Отрисовать одну сущность."""
-        if not self.fov_system or not self.fov_system.is_visible(entity.x, entity.y):
+        in_fov = self.fov_system and self.fov_system.is_visible(entity.x, entity.y)
+        adjacent = False
+        player = getattr(self.game_engine, 'player', None) if self.game_engine else None
+        if player is not None:
+            adjacent = abs(entity.x - player.x) + abs(entity.y - player.y) <= 1
+        if not in_fov and not adjacent:
             return
         
         if not self.camera.is_visible(entity.x, entity.y):
@@ -267,7 +316,7 @@ class Renderer:
         screen_x, screen_y = self.camera.world_to_screen(entity.x, entity.y)
         
         if 0 <= screen_x < self.map_width and 0 <= screen_y < self.map_height:
-            symbol = getattr(entity, 'symbol', '?')
+            symbol = self._safe_glyph(getattr(entity, 'symbol', '?'))
             color = getattr(entity, 'color', libtcodpy.Color(255, 255, 255))
             
             self.console.print(
@@ -306,34 +355,67 @@ class Renderer:
                     msg = msg[:self.screen_width - 2]
                 self.console.print(1, y, msg, fg=COLOR_TEXT)
             
-    def draw_dialogue(self, text: str, speaker_name: str = ''):
-        """Окно диалога."""
-        if not text:
+    def draw_dialogue(self, text: str, speaker_name: str = '', choices=None):
+        """Окно диалога, при необходимости — с вариантами ответа."""
+        if not text and not choices:
             return
-        
-        # Рамка диалога
-        box_y = self.map_height - 6
-        box_height = 4
+
+        choices = choices or []
         box_width = self.screen_width - 4
-        
-        # Рисуем рамку
+        extra = max(0, len(choices))
+        box_height = 5 + extra
+        box_y = max(2, self.map_height - box_height - 1)
+
         self.console.print(2, box_y, '┌' + '─' * (box_width - 2) + '┐', fg=COLOR_DIALOGUE)
         for i in range(1, box_height - 1):
             self.console.print(2, box_y + i, '│' + ' ' * (box_width - 2) + '│', fg=COLOR_DIALOGUE)
-        self.console.print(2, box_y + box_height - 1, '' + '─' * (box_width - 2) + '┘', fg=COLOR_DIALOGUE)
-        
-        # Имя говорящего
+        self.console.print(2, box_y + box_height - 1, '└' + '─' * (box_width - 2) + '┘', fg=COLOR_DIALOGUE)
+
         if speaker_name:
             self.console.print(4, box_y, f"[ {speaker_name} ]", fg=COLOR_DIALOGUE)
-        
-        # Текст
-        wrapped = self._wrap_text(text, box_width - 4)
-        for i, line in enumerate(wrapped[:box_height - 2]):
+
+        wrapped = self._wrap_text(text or '', box_width - 4)
+        for i, line in enumerate(wrapped[:2]):
             self.console.print(4, box_y + 1 + i, line, fg=COLOR_DIALOGUE)
-        
-        # Подсказка
-        self.console.print(self.screen_width - 25, box_y + box_height - 1,
-            "[Space — далее]", fg=COLOR_TEXT)
+
+        if choices:
+            for i, choice in enumerate(choices):
+                label = f"{i + 1}. {choice}"
+                if len(label) > box_width - 6:
+                    label = label[: box_width - 9] + "..."
+                self.console.print(4, box_y + 3 + i, label, fg=COLOR_DIALOGUE)
+            hint = "[1-3 — ответ]"
+        else:
+            hint = "[Space — далее]"
+        self.console.print(self.screen_width - len(hint) - 4, box_y + box_height - 1,
+            hint, fg=COLOR_TEXT)
+
+    def draw_ending(self, title: str, body: str):
+        """Финальный экран новеллы."""
+        for y in range(self.screen_height):
+            for x in range(self.screen_width):
+                self.console.bg[x, y] = libtcodpy.Color(8, 6, 8)
+        self.console.print(
+            self.screen_width // 2 - len(title) // 2,
+            self.screen_height // 2 - 4,
+            title,
+            fg=COLOR_DIALOGUE,
+        )
+        wrapped = self._wrap_text(body, self.screen_width - 16)
+        for i, line in enumerate(wrapped[:6]):
+            self.console.print(
+                self.screen_width // 2 - len(line) // 2,
+                self.screen_height // 2 - 1 + i,
+                line,
+                fg=COLOR_TEXT,
+            )
+        hint = "[Enter / Esc — выход]"
+        self.console.print(
+            self.screen_width // 2 - len(hint) // 2,
+            self.screen_height // 2 + 7,
+            hint,
+            fg=libtcodpy.Color(120, 120, 120),
+        )
     
     def _wrap_text(self, text: str, width: int):
         """Перенос текста по ширине."""
@@ -396,10 +478,18 @@ class Renderer:
         )
         
         # Управление
-        self.console.print(1, hud_y + 2,
-            "hjkl/стрелки-движ | a-атака | e-взаим | r-читать | i-инв | q-выход",
-            fg=COLOR_TEXT
-        )
+        in_combat = getattr(self.game_engine, 'state', None) == 'combat'
+        if in_combat:
+            self.console.print(
+                1, hud_y + 2,
+                "БОЙ: пробел — удар | Esc — бежать",
+                fg=COLOR_HP,
+            )
+        else:
+            self.console.print(1, hud_y + 2,
+                "стрелки/hjkl | a атака | e действие | r читать | i инв | ? справка | q выход",
+                fg=COLOR_TEXT
+            )
         
     def draw_quests(self, quest_descriptions: List[str]):
         """Отрисовка активных квестов."""
@@ -412,8 +502,8 @@ class Renderer:
         for i, desc in enumerate(quest_descriptions[:2]):
             y = quest_y - i
             if y > 0:
-                if len(desc) > self.screen_width - 2:
-                    desc = desc[:self.screen_width - 2]
+                if len(desc) > self.map_width - 2:
+                    desc = desc[:self.map_width - 2]
                 self.console.print(1, y, desc, fg=libtcodpy.Color(200, 180, 100))
             
     def present(self, context):
@@ -488,13 +578,43 @@ class Renderer:
                 fg=libtcodpy.Color(r, g, b)
             )
             
+    def draw_legend(self):
+        """Постоянная расшифровка ASCII справа от карты."""
+        x0 = self.map_width
+        width = self.legend_width
+        muted = libtcodpy.Color(110, 115, 120)
+        title_fg = libtcodpy.Color(220, 200, 150)
+        panel = libtcodpy.Color(18, 16, 18)
+
+        for y in range(self.map_height):
+            for x in range(x0, x0 + width):
+                self.console.bg[x, y] = panel
+            self.console.print(x0, y, '│', fg=muted)
+
+        self.console.print(x0 + 2, 1, 'легенда', fg=title_fg)
+        self.console.print(x0 + 1, 2, '─' * (width - 2), fg=muted)
+
+        y = 4
+        for symbol, short, _long in TILE_LEGEND:
+            if y >= self.map_height - 3:
+                break
+            fg, _bg = self._get_tile_color(symbol, True, True)
+            if symbol == '@':
+                fg = COLOR_PLAYER
+            self.console.print(x0 + 2, y, symbol, fg=fg)
+            label = short
+            if len(label) > width - 6:
+                label = label[: width - 6]
+            self.console.print(x0 + 4, y, label, fg=COLOR_TEXT)
+            y += 1
+
+        self.console.print(x0 + 2, self.map_height - 2, '? справка', fg=muted)
+
     def draw_help(self):
         """Окно помощи с расшифровкой условных обозначений."""
-        # Полупрозрачный фон — затемняем существующий
         for y in range(self.screen_height):
             for x in range(self.screen_width):
                 bg = self.console.bg[x, y]
-                # bg — это numpy массив [r, g, b]
                 r = int(bg[0]) if hasattr(bg, '__getitem__') else bg.r
                 g = int(bg[1]) if hasattr(bg, '__getitem__') else bg.g
                 b = int(bg[2]) if hasattr(bg, '__getitem__') else bg.b
@@ -503,21 +623,92 @@ class Renderer:
                     max(0, g - 40),
                     max(0, b - 40)
                 )
-        
-        # Размеры окна
-        box_width = 50
-        box_height = 22
+
+        controls = [
+            'hjkl / Стрелки — движение',
+            'a — атака | e — взаимодействие',
+            'r — читать записку | i — инвентарь',
+            '? / F1 — это окно помощи',
+            'q / Esc — выход из игры',
+        ]
+        box_width = 52
+        box_height = 8 + len(TILE_LEGEND) + len(controls)
+        box_height = min(box_height, self.screen_height - 2)
         box_x = (self.screen_width - box_width) // 2
-        box_y = (self.screen_height - box_height) // 2
-        
-        # Рисуем рамку
+        box_y = max(0, (self.screen_height - box_height) // 2)
+
         self.console.print(box_x, box_y, '┌' + '─' * (box_width - 2) + '┐', fg=COLOR_DIALOGUE)
         for i in range(1, box_height - 1):
             self.console.print(box_x, box_y + i, '│' + ' ' * (box_width - 2) + '│', fg=COLOR_DIALOGUE)
         self.console.print(box_x, box_y + box_height - 1, '└' + '─' * (box_width - 2) + '┘', fg=COLOR_DIALOGUE)
+
+        title = "УСЛОВНЫЕ ОБОЗНАЧЕНИЯ"
+        self.console.print(
+            box_x + (box_width - len(title)) // 2,
+            box_y + 1,
+            title,
+            fg=libtcodpy.Color(255, 220, 100)
+        )
+        self.console.print(box_x + 2, box_y + 2, '─' * (box_width - 4), fg=COLOR_TEXT)
+
+        y_offset = 4
+        max_y = box_y + box_height - 8
+        for symbol, _short, long_name in TILE_LEGEND:
+            if box_y + y_offset > max_y:
+                break
+            fg, _bg = self._get_tile_color(symbol, True, True)
+            if symbol == '@':
+                fg = COLOR_PLAYER
+            self.console.print(box_x + 4, box_y + y_offset, symbol, fg=fg)
+            self.console.print(box_x + 8, box_y + y_offset, f'— {long_name}', fg=COLOR_TEXT)
+            y_offset += 1
+
+        y_offset += 1
+        self.console.print(box_x + 2, box_y + y_offset, '─' * (box_width - 4), fg=COLOR_TEXT)
+        y_offset += 1
+        for control in controls:
+            if box_y + y_offset >= box_y + box_height - 2:
+                break
+            self.console.print(box_x + 4, box_y + y_offset, control, fg=COLOR_TEXT)
+            y_offset += 1
+
+        self.console.print(
+            box_x + (box_width - 30) // 2,
+            box_y + box_height - 2,
+            '[ ? / F1 / Esc — закрыть ]',
+            fg=libtcodpy.Color(150, 150, 150)
+        )
+        
+    def draw_inventory(self, player, selected_index: int):
+        """Окно инвентаря."""
+        # Размеры окна
+        box_width = 50
+        box_height = min(20, len(player.inventory) + 6)
+        box_x = (self.screen_width - box_width) // 2
+        box_y = (self.screen_height - box_height) // 2
+        
+        # Затемняем только область окна (с отступом 2 клетки)
+        padding = 2
+        for y in range(max(0, box_y - padding), min(self.screen_height, box_y + box_height + padding)):
+            for x in range(max(0, box_x - padding), min(self.screen_width, box_x + box_width + padding)):
+                bg = self.console.bg[x, y]
+                r = int(bg[0]) if hasattr(bg, '__getitem__') else bg.r
+                g = int(bg[1]) if hasattr(bg, '__getitem__') else bg.g
+                b = int(bg[2]) if hasattr(bg, '__getitem__') else bg.b
+                self.console.bg[x, y] = libtcodpy.Color(
+                    max(0, r - 60),
+                    max(0, g - 60),
+                    max(0, b - 60)
+                )
+        
+        # Рамка
+        self.console.print(box_x, box_y, '┌' + '─' * (box_width - 2) + '', fg=COLOR_DIALOGUE)
+        for i in range(1, box_height - 1):
+            self.console.print(box_x, box_y + i, '│' + ' ' * (box_width - 2) + '│', fg=COLOR_DIALOGUE)
+        self.console.print(box_x, box_y + box_height - 1, '└' + '─' * (box_width - 2) + '', fg=COLOR_DIALOGUE)
         
         # Заголовок
-        title = "УСЛОВНЫЕ ОБОЗНАЧЕНИЯ"
+        title = "ИНВЕНТАРЬ"
         self.console.print(
             box_x + (box_width - len(title)) // 2,
             box_y + 1,
@@ -528,47 +719,36 @@ class Renderer:
         # Разделитель
         self.console.print(box_x + 2, box_y + 2, '─' * (box_width - 4), fg=COLOR_TEXT)
         
-        # Символы и их значения
-        symbols = [
-            ('@', 'Вы (игрок)', libtcodpy.Color(220, 220, 230)),
-            ('&', 'NPC / Враг', libtcodpy.Color(255, 100, 100)),
-            ('!', 'Предмет', libtcodpy.Color(100, 255, 100)),
-            ('~', 'Записка', libtcodpy.Color(200, 180, 100)),
-            ('D', 'Дверь (открытая)', libtcodpy.Color(160, 120, 60)),
-            ('d', 'Дверь (запертая)', libtcodpy.Color(200, 60, 60)),
-            ('S', 'Лестница / Выход', libtcodpy.Color(100, 200, 255)),
-            ('*', 'Источник света', libtcodpy.Color(255, 200, 50)),
-            ('#', 'Стена', COLOR_WALL),
-            ('.', 'Пол (проходимо)', COLOR_FLOOR),
-        ]
+        # Список предметов — читаем из player.inventory каждый раз
+        if not player.inventory:
+            self.console.print(box_x + 4, box_y + 4, "Пусто", fg=COLOR_TEXT)
+        else:
+            for i, item in enumerate(player.inventory):
+                y = box_y + 4 + i
+                if y >= box_y + box_height - 3:
+                    break
+                # Маркер выбранного предмета
+                if i == selected_index:
+                    marker = "▶ "
+                    color = libtcodpy.Color(255, 255, 100)
+                else:
+                    marker = "  "
+                    color = COLOR_TEXT
+                # Имя предмета
+                item_name = getattr(item, 'name', 'Неизвестный предмет')
+                self.console.print(box_x + 4, y, f"{marker}{item_name}", fg=color)
         
-        y_offset = 4
-        for symbol, description, color in symbols:
-            self.console.print(box_x + 4, box_y + y_offset, symbol, fg=color)
-            self.console.print(box_x + 8, box_y + y_offset, f'— {description}', fg=COLOR_TEXT)
-            y_offset += 1
+        # Пункт "Выход"
+        exit_y = box_y + box_height - 3
+        if selected_index == len(player.inventory):
+            self.console.print(box_x + 4, exit_y, "▶ Выход", fg=libtcodpy.Color(255, 100, 100))
+        else:
+            self.console.print(box_x + 4, exit_y, "  Выход", fg=COLOR_TEXT)
         
-        # Управление
-        y_offset += 1
-        self.console.print(box_x + 2, box_y + y_offset, '─' * (box_width - 4), fg=COLOR_TEXT)
-        y_offset += 1
-        
-        controls = [
-            'hjkl / Стрелки — движение',
-            'a — атака | e — взаимодействие',
-            'r — читать записку | i — инвентарь',
-            '? / F1 — это окно помощи',
-            'q / Esc — выход из игры',
-        ]
-        
-        for control in controls:
-            self.console.print(box_x + 4, box_y + y_offset, control, fg=COLOR_TEXT)
-            y_offset += 1
-        
-        # Подсказка закрытия
+        # Подсказки
+        hints_y = box_y + box_height - 1
         self.console.print(
-            box_x + (box_width - 30) // 2,
-            box_y + box_height - 2,
-            '[ ? / F1 / Esc — закрыть ]',
+            box_x + 4, hints_y,
+            "↑/↓ — выбор | e — использовать | i/Esc — выход",
             fg=libtcodpy.Color(150, 150, 150)
         )

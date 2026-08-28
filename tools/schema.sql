@@ -136,3 +136,36 @@ CREATE TABLE player_classes (
     starting_items TEXT,
     starting_room_id TEXT
 );
+
+-- ============================================================
+-- АВТОРСКИЙ СПАВН НА ФИКСИРОВАННЫХ КАРТАХ
+-- ============================================================
+CREATE TABLE map_placements (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    map_id TEXT NOT NULL,
+    x INTEGER NOT NULL,
+    y INTEGER NOT NULL,
+    spawn_type TEXT NOT NULL CHECK(spawn_type IN ('character', 'item')),
+    spawn_id TEXT NOT NULL,
+        UNIQUE(map_id, x, y)
+);
+
+CREATE TABLE door_locks (
+    map_id TEXT NOT NULL,
+    x INTEGER NOT NULL,
+    y INTEGER NOT NULL,
+    required_key_id TEXT NOT NULL,
+    PRIMARY KEY (map_id, x, y)
+);
+
+CREATE TABLE map_regions (
+    id TEXT PRIMARY KEY,
+    map_id TEXT NOT NULL,
+    x1 INTEGER NOT NULL,
+    y1 INTEGER NOT NULL,
+    x2 INTEGER NOT NULL,
+    y2 INTEGER NOT NULL,
+    name TEXT NOT NULL,
+    first_visit_text TEXT,
+    sanity_effect INTEGER DEFAULT 0
+);

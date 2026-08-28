@@ -2,6 +2,8 @@
 import sqlite3
 import json
 from typing import Optional, List, Dict
+from engine.db_migrate import apply_migrations
+from engine.constants import TILE_TO_CONNECTION_TYPES
 
 
 class DBLoader:
@@ -11,6 +13,7 @@ class DBLoader:
         self.db_path = db_path
         self.conn = sqlite3.connect(db_path)
         self.conn.row_factory = sqlite3.Row  # Доступ по именам колонок
+        apply_migrations(self.conn)
     
     def get_character(self, char_id: str) -> Optional[Dict]:
         cursor = self.conn.execute(
@@ -101,10 +104,23 @@ class DBLoader:
         return [dict(row) for row in cursor.fetchall()]
     
     def get_note(self, note_id: str) -> Optional[Dict]:
-        """Получить записку по ID."""
+        """Получить записку по ID. Текст может жить в items.content или в notes."""
         cursor = self.conn.execute(
             "SELECT * FROM items WHERE id = ? AND type = 'note'",
             (note_id,)
+        )
+        row = cursor.fetchone()
+        if row:
+            data = dict(row)
+            if not data.get("content"):
+                extra = self.conn.execute(
+                    "SELECT content FROM notes WHERE id = ?", (note_id,)
+                ).fetchone()
+                if extra and extra["content"]:
+                    data["content"] = extra["content"]
+            return data
+        cursor = self.conn.execute(
+            "SELECT * FROM notes WHERE id = ?", (note_id,)
         )
         row = cursor.fetchone()
         return dict(row) if row else None
@@ -221,9 +237,10 @@ class DBLoader:
         except:
             # Дефолтные значения если таблицы нет
             return {
-                '#': 1, ' ': 1, 'd': 1,  # Блокируют свет
-                '.': 0, 'D': 0, 'W': 0, 'S': 0, '*': 0, '!': 0, ')': 0,
-                '~': 0, '&': 0, '@': 0, 'k': 0, 'P': 0  # Пропускают свет
+                '#': 1, ' ': 1, 'd': 1, 'H': 1, 'O': 1,
+                '.': 0, 'D': 0, 'W': 0, 'S': 0, 's': 0, 'E': 0,
+                '*': 0, '!': 0, ')': 0, '~': 0, '&': 0, '@': 0,
+                'k': 0, 'P': 0, 'B': 0, 'T': 0, 'C': 0,
             }
     
     def get_light_sources(self) -> List[Dict]:
@@ -240,4 +257,85 @@ class DBLoader:
             "SELECT * FROM light_sources WHERE id = ?", (source_id,)
         )
         row = cursor.fetchone()
+        return dict(row) if row else None
+    
+    def get_map_connections(self, map_id: str) -> List[Dict]:
+        """Получить все связи для указанной карты."""
+        cursor = self.conn.execute(
+            """SELECT * FROM map_connections 
+               WHERE source_map_id = ?
+               ORDER BY connection_type""",
+            (map_id,)
+        )
+        return [dict(row) for row in cursor.fetchall()]
+    
+    def get_connection_at_position(self, map_id: str, x: int, y: int) -> Optional[Dict]:
+        """Получить связь в указанной позиции."""
+        cursor = self.conn.execute(
+            """SELECT * FROM map_connections 
+               WHERE source_map_id = ? 
+               AND source_x = ? 
+               AND source_y = ?""",
+            (map_id, x, y)
+        )
+        row = cursor.fetchone()
+        return dict(row) if row else None
+    
+    def get_map_by_id(self, map_id: str) -> Optional[Dict]:
+        """Получить карту по ID."""
+        cursor = self.conn.execute(
+            "SELECT * FROM maps WHERE id = ?",
+            (map_id,)
+        )
+        row = cursor.fetchone()
+        return dict(row) if row else None
+
+    def get_map_placements(self, map_id: str) -> List[Dict]:
+        """Авторские точки спавна на карте."""
+        cursor = self.conn.execute(
+            """SELECT * FROM map_placements
+               WHERE map_id = ?
+               ORDER BY id""",
+            (map_id,),
+        )
+        return [dict(row) for row in cursor.fetchall()]
+
+    def get_connection_for_tile(
+        self, map_id: str, tile: str, x: int, y: int
+    ) -> Optional[Dict]:
+        """Связь карты для клетки перехода. Сначала точные координаты, затем тип."""
+        exact = self.get_connection_at_position(map_id, x, y)
+        if exact:
+            return exact
+
+        wanted = TILE_TO_CONNECTION_TYPES.get(tile, ())
+        if not wanted:
+            return None
+
+        connections = self.get_map_connections(map_id)
+        for wanted_type in wanted:
+            for conn in connections:
+                if conn["connection_type"] == wanted_type:
+                    return conn
+        return None
+
+    def get_door_lock(self, map_id: str, x: int, y: int) -> Optional[str]:
+        """ID ключа для запертой двери или None."""
+        row = self.conn.execute(
+            """SELECT required_key_id FROM door_locks
+               WHERE map_id = ? AND x = ? AND y = ?""",
+            (map_id, x, y),
+        ).fetchone()
+        return row["required_key_id"] if row else None
+
+    def get_region_at(self, map_id: str, x: int, y: int) -> Optional[Dict]:
+        """Комната/зона, в которую попадает клетка."""
+        row = self.conn.execute(
+            """SELECT * FROM map_regions
+               WHERE map_id = ?
+                 AND x1 <= ? AND ? <= x2
+                 AND y1 <= ? AND ? <= y2
+               LIMIT 1""",
+            (map_id, x, x, y, y),
+        ).fetchone()
         return dict(row) if row else None
