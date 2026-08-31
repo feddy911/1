@@ -384,7 +384,7 @@ class Renderer:
                 if len(label) > box_width - 6:
                     label = label[: box_width - 9] + "..."
                 self.console.print(4, box_y + 3 + i, label, fg=COLOR_DIALOGUE)
-            hint = "[1-3 — ответ]"
+            hint = f"[1-{len(choices)} — ответ]"
         else:
             hint = "[Space — далее]"
         self.console.print(self.screen_width - len(hint) - 4, box_y + box_height - 1,
@@ -402,17 +402,18 @@ class Renderer:
             fg=COLOR_DIALOGUE,
         )
         wrapped = self._wrap_text(body, self.screen_width - 16)
-        for i, line in enumerate(wrapped[:6]):
+        body_y = self.screen_height // 2 - 2
+        for i, line in enumerate(wrapped[:9]):
             self.console.print(
                 self.screen_width // 2 - len(line) // 2,
-                self.screen_height // 2 - 1 + i,
+                body_y + i,
                 line,
                 fg=COLOR_TEXT,
             )
         hint = "[Enter / Esc — выход]"
         self.console.print(
             self.screen_width // 2 - len(hint) // 2,
-            self.screen_height // 2 + 7,
+            body_y + 11,
             hint,
             fg=libtcodpy.Color(120, 120, 120),
         )
@@ -438,7 +439,7 @@ class Renderer:
         
         return lines
     
-    def draw_class_selection(self, classes, selected_index: int):
+    def draw_class_selection(self, classes, selected_index: int, has_save: bool = False):
         """Экран выбора класса."""
         self.console.clear()
         
@@ -461,8 +462,10 @@ class Renderer:
             stats_str = ' '.join([f"{k}:{v}" for k, v in stats.items()])
             self.console.print(12, y + 2, stats_str, fg=COLOR_TEXT)
         
-        self.console.print(10, self.screen_height - 3,
-            "↑/↓ — выбор | Enter — подтвердить", fg=COLOR_TEXT)
+        hint = "↑/↓ — выбор | Enter — новая ночь"
+        if has_save:
+            hint += " | C — продолжить"
+        self.console.print(10, self.screen_height - 3, hint, fg=COLOR_TEXT)
         
     def draw_hud(self, player):
         """Панель состояния."""
@@ -487,7 +490,7 @@ class Renderer:
             )
         else:
             self.console.print(1, hud_y + 2,
-                "стрелки/hjkl | a атака | e действие | r читать | i инв | ? справка | q выход",
+                "стрелки/hjkl | a e r i | F5/F9 | ? справка | q выход",
                 fg=COLOR_TEXT
             )
         
@@ -628,8 +631,9 @@ class Renderer:
             'hjkl / Стрелки — движение',
             'a — атака | e — взаимодействие',
             'r — читать записку | i — инвентарь',
+            'F5 — записать ночь | F9 — вернуться',
             '? / F1 — это окно помощи',
-            'q / Esc — выход из игры',
+            'q / Esc — выход: ночь запишется',
         ]
         box_width = 52
         box_height = 8 + len(TILE_LEGEND) + len(controls)

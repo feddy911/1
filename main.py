@@ -4,20 +4,25 @@ ASCII-рогалик в стиле Достоевского.
 Точка входа.
 """
 import tcod
+from engine.clinic_font import load_clinic_tileset
+from engine.constants import SCREEN_HEIGHT, SCREEN_WIDTH
 from engine.game_engine import GameEngine
-from engine.constants import SCREEN_WIDTH, SCREEN_HEIGHT
 
 
 def main():
-    # Создаем контекст через new_terminal
-    with tcod.context.new_terminal(
-        SCREEN_WIDTH, 
-        SCREEN_HEIGHT,
-        vsync=True,
-    ) as context:
+    tileset = load_clinic_tileset()
+    kwargs = {
+        "columns": SCREEN_WIDTH,
+        "rows": SCREEN_HEIGHT,
+        "vsync": True,
+        "title": "Петербург. Клиника. Бред.",
+    }
+    if tileset is not None:
+        kwargs["tileset"] = tileset
+    with tcod.context.new(**kwargs) as context:
         engine = GameEngine(context)
         engine.run()
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()

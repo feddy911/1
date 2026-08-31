@@ -1,112 +1,114 @@
 """Система безумия (SAN)."""
 import random
-import math
+
+
+# Сообщения только при росте hallucination_level (пороги 80 / 60 / 40 / 20).
+_LEVEL_EVENTS = {
+    1: [
+        "Зрение дрожит, как лампа в коридоре.",
+        "Кто-то шепчет за спиной — и смолкает, когда оборачиваетесь.",
+        "Края комнаты чуть дальше, чем стена.",
+    ],
+    2: [
+        "Тень исчезает, едва вы шагнете. След остаётся теплее воздуха.",
+        "В пустом коридоре называют вас — не по имени.",
+        "Стены ближе, чем план здания.",
+    ],
+    3: [
+        "Вы видите проём, которого нет на стене.",
+        "Тени замахиваются — и проходят сквозь воздух.",
+        "Голоса в голове становятся громче шагов.",
+    ],
+    4: [
+        "Отражение улыбается без вас.",
+        "Комнаты меняются местами. Выход помнит другой этаж.",
+        "Имя, которого не было, просят повторить.",
+    ],
+}
 
 
 class SanSystem:
     """Управление уровнем рассудка и галлюцинациями."""
-    
+
     def __init__(self, player):
         self.player = player
         self.current_san = player.san
         self.last_san = player.san
-        self.hallucination_level = 0
+        self.hallucination_level = self._calculate_hallucination_level()
         self.san_events = []
-    
+
     def update(self):
-        """Обновить состояние безумия."""
-        # Проверяем изменение SAN
-        if self.current_san != self.player.san:
-            self.last_san = self.current_san
-            self.current_san = self.player.san
-            
-            # Обновляем уровень галлюцинаций
-            self.hallucination_level = self._calculate_hallucination_level()
-            
-            # Добавляем событие
-            event = self._check_san_event()
-            if event:
-                self.san_events.append(event)
-        
-        return self.san_events
-    
+        """Вернуть только новые события. Повторный вызов без смены SAN — пусто."""
+        if self.current_san == self.player.san:
+            return []
+
+        old_level = self.hallucination_level
+        self.last_san = self.current_san
+        self.current_san = self.player.san
+        self.hallucination_level = self._calculate_hallucination_level()
+
+        if self.hallucination_level <= old_level:
+            return []
+
+        event = self._event_for_level(self.hallucination_level)
+        if event:
+            self.san_events.append(event)
+            return [event]
+        return []
+
     def _calculate_hallucination_level(self) -> int:
         """Рассчитать уровень галлюцинаций."""
         if self.current_san > 80:
             return 0
         elif self.current_san > 60:
-            return 1  # Лёгкие искажения
+            return 1
         elif self.current_san > 40:
-            return 2  # Средние галлюцинации
+            return 2
         elif self.current_san > 20:
-            return 3  # Сильные искажения
+            return 3
         else:
-            return 4  # Полное безумие
-    
+            return 4
+
+    def _event_for_level(self, level: int) -> str:
+        options = _LEVEL_EVENTS.get(level)
+        if not options:
+            return ""
+        return random.choice(options)
+
     def _check_san_event(self) -> str:
-        """Проверить, произошло ли событие безумия."""
-        if self.current_san < 80 and self.current_san > 60:
-            return random.choice([
-                "Ваше зрение немного дрожит...",
-                "Вы слышите шёпот за спиной...",
-                "Края комнаты кажутся искажёнными..."
-            ])
-        
-        elif self.current_san < 60 and self.current_san > 40:
-            return random.choice([
-                "Вы видите тень, которая исчезает при приближении.",
-                "Кто-то называет ваше имя в пустом коридоре...",
-                "Стены кажутся слишком близкими..."
-            ])
-        
-        elif self.current_san < 40 and self.current_san > 20:
-            return random.choice([
-                "Вы видите стены, которые не существуют!",
-                "Тени атакуют вас, но их нет на самом деле!",
-                "Голоса в голове становятся громче..."
-            ])
-        
-        elif self.current_san <= 20:
-            return random.choice([
-                "Вы сходите с ума! Все кажется нереальным!",
-                "Ваше собственное отражение улыбается вам с угрозой!",
-                "Комнаты перемещаются! Где выход?!"
-            ])
-        
-        return ""
-    
+        """Совместимость: текст для текущего уровня, без смены состояния."""
+        return self._event_for_level(self.hallucination_level)
+
     def get_sanity_effects(self) -> dict:
-        """Получить текущие эффекты безумия."""
+        """Получить текущие эффекты безумия.
+
+        control не инвертируем и не рандомизируем: молчащие клавиши
+        уже принимали за поломку.
+        """
         effects = {
             'visual': None,
             'sound': None,
             'control': None,
             'hallucinations': []
         }
-        
-        # Лёгкие искажения (60-80 SAN)
+
         if self.hallucination_level >= 1:
-            effects['visual'] = 'flicker'  # Мерцание экрана
-        
-        # Средние галлюцинации (40-60 SAN)
+            effects['visual'] = 'flicker'
+
         if self.hallucination_level >= 2:
             effects['visual'] = 'distortion'
             effects['hallucinations'] = self._generate_hallucinations(2)
-        
-        # Сильные искажения (20-40 SAN)
+
         if self.hallucination_level >= 3:
             effects['visual'] = 'heavy_distortion'
-            effects['control'] = 'inverted'  # Инвертированное управление
             effects['hallucinations'] = self._generate_hallucinations(4)
-        
-        # Полное безумие (<20 SAN)
+
         if self.hallucination_level >= 4:
             effects['visual'] = 'chaos'
-            effects['control'] = 'random'  # Случайное управление
             effects['hallucinations'] = self._generate_hallucinations(6)
-        
+
         return effects
-    
+
     def _generate_hallucinations(self, count: int) -> list:
         """Сгенерировать галлюцинации."""
         hallucinations = []

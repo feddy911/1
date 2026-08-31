@@ -28,6 +28,7 @@ wheels/
 
 # Сохранения игр
 saves/
+data/saves/
 
 # Временные файлы
 *.log

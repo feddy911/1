@@ -13,7 +13,7 @@ from engine.constants import (
     CLASS_GLIMPSES,
     DOOR_TILES,
     DOUBLE_SAN_THRESHOLD,
-    ENDINGS,
+    ending_text,
     LOCKED_DOOR_HINTS,
     LOCKED_DOOR_TILES,
     NOTE_POSTSCRIPTS,
@@ -30,6 +30,8 @@ from engine.fov_system import FOVSystem
 from engine.quest_system import QuestSystem
 from engine.renderer import Renderer
 from engine.sanity_system import SanSystem
+from engine.save_system import has_save, read_save, restore_map_states, write_save
+from engine.sound import play as play_sound
 from engine.trigger_system import TriggerSystem
 
 
@@ -77,6 +79,7 @@ class GameEngine:
         self.san_system = None
         self.quest_system = None
         self.notified_quests = []
+        self.fired_triggers = set()
         self.flags = set()
         self.visited_regions = set()
         self.visited_maps = set()
@@ -113,12 +116,13 @@ class GameEngine:
 
         self.player = Player(class_data)
         self.map_states = {}
-        self.flags = set()
+        self.flags = {f'class_{class_id}'}
         self.visited_regions = set()
         self.visited_maps = set()
         self.ending_id = None
         self.bred_return = None
         self.bred_seed = random.randint(1, 10**9)
+        self.fired_triggers = set()
         self.current_dialogue_choices = []
 
         starting_map = self.db.get_starting_map()
@@ -140,6 +144,91 @@ class GameEngine:
 
         self.san_system = SanSystem(self.player)
         self.quest_system = QuestSystem(self.db)
+        return True
+
+    def save_game(self, path=None) -> bool:
+        """Записать один слот. Не сохраняет экран смерти и концовку."""
+        if not self.player or self.state in (
+            GameState.CLASS_SELECTION, GameState.ENDING, GameState.GAME_OVER
+        ):
+            self.add_message("Сейчас сохранять нечего.")
+            return False
+        write_save(self, path)
+        self.add_message("Ночь записана. F9 — вернуться.")
+        return True
+
+    def _can_save(self) -> bool:
+        return bool(self.player) and self.state not in (
+            GameState.CLASS_SELECTION, GameState.ENDING, GameState.GAME_OVER
+        )
+
+    def quit_and_save(self, path=None) -> bool:
+        """Выход: записать слот, если есть партия. Титул, смерть и финал не пишут."""
+        if self._can_save():
+            write_save(self, path)
+        return False
+
+    def load_game(self, path=None) -> bool:
+        """Восстановить слот. Класс и карта — из файла."""
+        payload = read_save(path)
+        if not payload:
+            self.add_message("Записи нет. Или она чужая.")
+            return False
+        class_data = self.db.get_player_class(payload["class_id"])
+        if not class_data:
+            self.add_message("Класс из записи больше не существует.")
+            return False
+        self.player = Player(class_data)
+        pdata = payload.get("player") or {}
+        self.player.x = int(pdata.get("x", 0))
+        self.player.y = int(pdata.get("y", 0))
+        self.player.max_hp = int(pdata.get("max_hp") or self.player.max_hp)
+        self.player.hp = int(pdata.get("hp") or self.player.hp)
+        self.player.max_san = int(pdata.get("max_san") or self.player.max_san)
+        self.player.san = int(pdata.get("san") or self.player.san)
+        self.player.inventory = []
+        for item_id in pdata.get("inventory") or []:
+            item = self.entity_factory.create_item(item_id)
+            if item:
+                self.player.inventory.append(item)
+        self._refresh_player_weapon()
+
+        self.flags = set(payload.get("flags") or [])
+        self.flags.add(f'class_{self.player.id}')
+        self.visited_regions = set(payload.get("visited_regions") or [])
+        self.visited_maps = set(payload.get("visited_maps") or [])
+        self.bred_seed = payload.get("bred_seed") or 1
+        self.bred_return = payload.get("bred_return")
+        self.notified_quests = list(payload.get("notified_quests") or [])
+        self.fired_triggers = set(payload.get("fired_triggers") or [])
+        self.ending_id = None
+        self.current_enemy = None
+        self.showing_help = False
+        self.is_inventory_open = False
+        self.current_dialogue_choices = []
+        self.current_map_id = None
+        self.current_map = []
+        self.entities = []
+        self.messages = []
+        self.map_states = restore_map_states(self, payload)
+
+        map_id = payload["map_id"]
+        self._load_map(map_id)
+        self.player.x = int(pdata.get("x", self.player.x))
+        self.player.y = int(pdata.get("y", self.player.y))
+        if self.current_map:
+            height = len(self.current_map)
+            width = len(self.current_map[0]) if height else 0
+            if not (0 <= self.player.y < height and 0 <= self.player.x < width):
+                self._place_player_on_start()
+        self._compute_fov()
+
+        self.san_system = SanSystem(self.player)
+        self.quest_system = QuestSystem(self.db)
+        self.quest_system.found_notes = list(payload.get("found_notes") or [])
+        self.quest_system._check_quest_progress()
+        self.state = GameState.PLAYING
+        self.add_message("Вы снова открываете глаза. Потолок тот же.")
         return True
 
     def _save_current_map_state(self):
@@ -240,7 +329,9 @@ class GameEngine:
         if saved:
             self.current_map = [row[:] for row in saved['tiles']]
             self.entities = list(saved['entities'])
-            self.light_sources = list(saved['light_sources'])
+            self.light_sources = list(saved.get('light_sources') or [])
+            if not self.light_sources:
+                self.light_sources = self._collect_light_sources()
             self._init_fov(saved.get('explored'))
         else:
             if map_id == BRED_MAP_ID:
@@ -320,7 +411,7 @@ class GameEngine:
         """Обработка ввода."""
         for event in tcod.event.wait():
             if isinstance(event, tcod.event.Quit):
-                return False
+                return self.quit_and_save()
             if isinstance(event, tcod.event.KeyDown):
                 if self.state == GameState.CLASS_SELECTION:
                     if not self._handle_class_selection(event):
@@ -370,6 +461,11 @@ class GameEngine:
         elif event.sym == tcod.event.KeySym.RETURN:
             selected = self.available_classes[self.selected_class_index]
             self.start_game_with_class(selected['id'])
+        elif event.sym == tcod.event.KeySym.C:
+            if has_save():
+                self.load_game()
+            else:
+                self.add_message("Записи нет.")
         return True
 
     def _handle_playing(self, event) -> bool:
@@ -388,7 +484,7 @@ class GameEngine:
             return self._handle_inventory_input(event)
 
         if event.sym in (tcod.event.KeySym.Q, tcod.event.KeySym.ESCAPE):
-            return False
+            return self.quit_and_save()
 
         if event.sym in (tcod.event.KeySym.UP, tcod.event.KeySym.K):
             self._try_move(0, -1)
@@ -413,6 +509,10 @@ class GameEngine:
             tcod.event.KeySym.F1,
         ):
             self.showing_help = True
+        elif event.sym == tcod.event.KeySym.F5:
+            self.save_game()
+        elif event.sym == tcod.event.KeySym.F9:
+            self.load_game()
         return True
 
     def _handle_inventory_input(self, event) -> bool:
@@ -482,8 +582,7 @@ class GameEngine:
             if not content and self.quest_system:
                 note_data = self.db.get_note(item.id)
                 content = (note_data or {}).get('content', '') or getattr(item, 'description', '')
-            self.add_message(f"=== {item.name} ===")
-            self.add_message(content or "Текст выцвел.")
+            self._present_testimony(item.name, content or "Чернила выцвели.")
             return
 
         self.add_message(f"Нельзя использовать {item.name}.")
@@ -585,6 +684,13 @@ class GameEngine:
                         self.add_message("Вы погибли...")
             return True
 
+        if event.sym == tcod.event.KeySym.F5:
+            self.save_game()
+            return True
+        if event.sym == tcod.event.KeySym.F9:
+            self.load_game()
+            return True
+
         if event.sym in (
             tcod.event.KeySym.UP, tcod.event.KeySym.DOWN,
             tcod.event.KeySym.LEFT, tcod.event.KeySym.RIGHT,
@@ -603,6 +709,8 @@ class GameEngine:
             'dialogue_innkeeper_intro': ('spoke_innkeeper', 'dialogue_innkeeper_repeat'),
             'dialogue_watchman_intro': ('spoke_watchman', 'dialogue_watchman_repeat'),
             'dialogue_beggar_intro': ('spoke_beggar', 'dialogue_beggar_repeat'),
+            'dialogue_archivist_intro': ('spoke_archivist', 'dialogue_archivist_repeat'),
+            'dialogue_possessed_intro': ('spoke_possessed', 'dialogue_possessed_repeat'),
         }
         if dialogue_id in mapping:
             flag, repeat_id = mapping[dialogue_id]
@@ -631,7 +739,10 @@ class GameEngine:
 
     def _handle_dialogue(self, event) -> bool:
         name = getattr(event.sym, "name", "") or ""
-        choice_index = {"N1": 0, "N2": 1, "N3": 2, "KP_1": 0, "KP_2": 1, "KP_3": 2}.get(name)
+        choice_index = {
+            "N1": 0, "N2": 1, "N3": 2, "N4": 3,
+            "KP_1": 0, "KP_2": 1, "KP_3": 2, "KP_4": 3,
+        }.get(name)
         if choice_index is not None and self.current_dialogue_choices:
             kind, text = self.dialogue_engine.choose(choice_index)
             self._apply_dialogue_view(kind, text)
@@ -662,6 +773,8 @@ class GameEngine:
         tile = self.current_map[new_y][new_x]
 
         if tile in BLOCKING_TILES:
+            if self._maybe_study_desk(new_x, new_y, tile):
+                return
             message = TILE_BUMP_MESSAGES.get(tile)
             if message:
                 self.add_message(message)
@@ -689,7 +802,10 @@ class GameEngine:
         self.player.y = new_y
         self._check_pickup()
 
-        trigger_result = self.trigger_system.check_enter_trigger(new_x, new_y, self.player)
+        trigger_result = self.trigger_system.check_enter_trigger(
+            new_x, new_y, self.player, self.current_map_id, self.fired_triggers
+        )
+        self.fired_triggers.update(trigger_result.fired_ids)
         for msg in trigger_result.messages:
             self.add_message(msg)
         self._apply_trigger_spawns(trigger_result, new_x, new_y)
@@ -757,6 +873,7 @@ class GameEngine:
         if tile == 'D':
             self.current_map[y][x] = '.'
             self.add_message("Вы открыли дверь.")
+            play_sound("door")
             return
 
         if tile in LOCKED_DOOR_TILES:
@@ -779,6 +896,7 @@ class GameEngine:
                 self.add_message(
                     f"Вы отперли дверь ключом '{key_item.name}'. Ключ сломался в замке."
                 )
+                play_sound("door")
             elif required:
                 hint = LOCKED_DOOR_HINTS.get(getattr(self.player, 'id', ''))
                 if hint:
@@ -791,6 +909,7 @@ class GameEngine:
                     self.add_message(
                         "Вы выбиваете дверь плечом. Замок орёт. Рассудок — тоже."
                     )
+                    play_sound("door")
                     self._maybe_spawn_double()
                     return
                 needed = self.entity_factory.create_item(required)
@@ -899,6 +1018,7 @@ class GameEngine:
                 or 'nastasya_escape' in self.flags
                 or 'guilt_admitted' in self.flags
                 or 'sennaya_name' in self.flags
+                or 'archive_name' in self.flags
             )
         )
         if can_flee:
@@ -914,36 +1034,78 @@ class GameEngine:
             return
         self.ending_id = ending_id
         self.state = GameState.ENDING
-        title, _body = ENDINGS.get(ending_id, ('КОНЕЦ', ''))
+        title, _body = ending_text(ending_id, getattr(self.player, 'id', ''))
         self.add_message(title)
+        play_sound("end")
+
+    def _present_testimony(self, name: str, content: str, first_hearing: bool = True):
+        """Бумага в логе — показание, не добыча."""
+        if first_hearing:
+            self.add_message(f"Показание. {name}.")
+            play_sound("paper")
+        else:
+            self.add_message("Это показание вы уже слышали.")
+        if content:
+            self.add_message(content)
+
+    def _maybe_study_desk(self, x: int, y: int, tile: str) -> bool:
+        """Пустой кабинет 2-го этажа отвечает бюро. Карту не двигаем."""
+        if tile != 'O' or self.current_map_id != 'hospital_floor_2':
+            return False
+        if 'study_desk' in self.flags:
+            return False
+        region = self.db.get_region_at(self.current_map_id, x, y)
+        if not region or region['id'] != 'f2_study':
+            return False
+        self.flags.add('study_desk')
+        self.add_message(
+            "Бюро. Под прессом черновик: «Пациент вспоминает. Нельзя.» "
+            "Почерк тот же, что внизу, у микстуры."
+        )
+        extra = {
+            'seeker': "Дата на полях — сегодняшняя. Имени нет.",
+            'mystic': "Бумага ещё тёплая, будто только что отняли руку.",
+            'rebel': "Можно скомкать. Вы не комкаете — пока.",
+        }.get(getattr(self.player, 'id', ''))
+        if extra:
+            self.add_message(extra)
+        return True
 
     def _read_note(self, note):
-        """Прочитать записку."""
+        """Прочитать записку как показание."""
         if self.quest_system:
-            if note.id in self.quest_system.found_notes:
-                self.add_message("Вы уже читали эту записку.")
+            already = note.id in self.quest_system.found_notes
+            if already:
+                content = getattr(note, 'content', '') or getattr(note, 'description', '')
+                if not content:
+                    note_data = self.db.get_note(note.id)
+                    content = (note_data or {}).get('content', '')
+                self._present_testimony(note.name, content, first_hearing=False)
                 if note in self.entities:
                     self.entities.remove(note)
                 return
             content = self.quest_system.add_note(note.id)
             if not content:
                 content = getattr(note, 'content', '') or getattr(note, 'description', '')
-            self.add_message(f"=== {note.name} ===")
-            self.add_message(content or "Текст выцвел.")
+            self._present_testimony(note.name, content or "Чернила выцвели.")
             sanity_damage = getattr(note, 'sanity_damage', 0) or 0
             if sanity_damage != 0:
                 self.player.change_san(sanity_damage)
-                effect_text = "теряете" if sanity_damage < 0 else "получаете"
-                self.add_message(f"Вы {effect_text} {abs(sanity_damage)} рассудка...")
+                if sanity_damage < 0:
+                    self.add_message("Строка держит дольше, чем взгляд.")
+                else:
+                    self.add_message("Строка отпускает — ненадолго.")
             postscript = NOTE_POSTSCRIPTS.get(getattr(self.player, 'id', ''))
             if postscript:
                 self.add_message(postscript)
+            if note.id == 'letter_1':
+                self.flags.add('read_study_letter')
             if note in self.entities:
                 self.entities.remove(note)
             self._maybe_spawn_double()
             self._check_quest_completion()
         else:
-            self.add_message(f"Вы нашли: {note.name}")
+            self._present_testimony(note.name, getattr(note, 'content', '') or "")
             self.player.inventory.append(note)
             if note in self.entities:
                 self.entities.remove(note)
@@ -964,15 +1126,8 @@ class GameEngine:
         notified_ids = {q['id'] for q in self.notified_quests}
         for quest in self.quest_system.completed_quests:
             if quest['id'] not in notified_ids:
-                self.add_message("═══════════════════════════════════")
-                self.add_message(f"КВЕСТ ВЫПОЛНЕН: {quest['title']}")
-                self.add_message("═══════════════════════════════════")
+                self.add_message("Бумаги молчат. Дальше — только правда или капли.")
                 self.notified_quests.append(quest)
-        if self.quest_system.is_all_completed():
-            self.add_message("═══════════════════════════════════")
-            self.add_message("ВСЕ КВЕСТЫ ВЫПОЛНЕНЫ!")
-            self.add_message("Тайна клиники раскрыта...")
-            self.add_message("═══════════════════════════════════")
 
     def _try_transition(self, x: int, y: int):
         """Попытка перехода на другую карту."""
@@ -1049,7 +1204,9 @@ class GameEngine:
 
         if self.state == GameState.CLASS_SELECTION:
             self.renderer.draw_class_selection(
-                self.available_classes, self.selected_class_index
+                self.available_classes,
+                self.selected_class_index,
+                has_save=has_save(),
             )
             self.renderer.present(self.context)
             return
@@ -1073,7 +1230,7 @@ class GameEngine:
         self.renderer.draw_messages(self.messages)
 
         if self.quest_system:
-            quest_desc = self.quest_system.get_active_quest_descriptions()
+            quest_desc = self.quest_system.get_active_quest_descriptions(self.flags)
             if quest_desc:
                 self.renderer.draw_quests(quest_desc)
 
@@ -1091,7 +1248,9 @@ class GameEngine:
             self.renderer.draw_inventory(self.player, self.inventory_selected_index)
 
         if self.state == GameState.ENDING and self.ending_id:
-            title, body = ENDINGS.get(self.ending_id, ('КОНЕЦ', ''))
+            title, body = ending_text(
+                self.ending_id, getattr(self.player, 'id', '')
+            )
             self.renderer.draw_ending(title, body)
         elif self.state == GameState.GAME_OVER:
             for y in range(SCREEN_HEIGHT):

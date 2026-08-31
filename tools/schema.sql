@@ -122,7 +122,10 @@ CREATE TABLE triggers (
     spawn_character_id TEXT,
     spawn_item_id TEXT,
     damage INTEGER DEFAULT 0,
-    heal INTEGER DEFAULT 0
+    heal INTEGER DEFAULT 0,
+    map_id TEXT,
+    x INTEGER,
+    y INTEGER
 );
 
 -- ============================================================

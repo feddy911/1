@@ -37,11 +37,19 @@ class DBLoader:
         )
         return [dict(row) for row in cursor.fetchall()]
     
-    def get_triggers_at(self, x: int, y: int) -> List[Dict]:
-        cursor = self.conn.execute(
-            "SELECT * FROM triggers WHERE type = 'on_enter' AND target_id = ?",
-            (f"{x},{y}",)
-        )
+    def get_triggers_at(self, x: int, y: int, map_id: Optional[str] = None) -> List[Dict]:
+        if map_id:
+            cursor = self.conn.execute(
+                """SELECT * FROM triggers
+                   WHERE type = 'on_enter' AND map_id = ? AND x = ? AND y = ?""",
+                (map_id, x, y),
+            )
+        else:
+            cursor = self.conn.execute(
+                """SELECT * FROM triggers
+                   WHERE type = 'on_enter' AND x = ? AND y = ?""",
+                (x, y),
+            )
         return [dict(row) for row in cursor.fetchall()]
     
     def get_dialogue(self, dialogue_id: str) -> Optional[Dict]:
@@ -94,14 +102,9 @@ class DBLoader:
         )
         return [dict(row) for row in cursor.fetchall()]
     
-    def get_triggers_at_position(self, x: int, y: int) -> List[Dict]:
+    def get_triggers_at_position(self, x: int, y: int, map_id: Optional[str] = None) -> List[Dict]:
         """Получить триггеры в указанной позиции."""
-        cursor = self.conn.execute(
-            """SELECT * FROM triggers 
-               WHERE x = ? AND y = ?""",
-            (x, y)
-        )
-        return [dict(row) for row in cursor.fetchall()]
+        return self.get_triggers_at(x, y, map_id)
     
     def get_note(self, note_id: str) -> Optional[Dict]:
         """Получить записку по ID. Текст может жить в items.content или в notes."""

@@ -90,6 +90,8 @@ def assert_map_walkable(errors, name, grid, start, expect_width):
 
 def main():
     errors = []
+    from engine.sound import set_enabled as _mute_sound
+    _mute_sound(False)
     src = (ROOT / "engine" / "game_engine.py").read_text(encoding="utf-8")
     tree = ast.parse(src)
     methods = {
@@ -99,7 +101,17 @@ def main():
         for node in node.body
         if isinstance(node, ast.FunctionDef)
     }
-    for name in ("_try_attack", "_try_read", "_try_interact", "_maybe_spawn_double"):
+    for name in (
+        "_try_attack",
+        "_try_read",
+        "_try_interact",
+        "_maybe_spawn_double",
+        "save_game",
+        "load_game",
+        "quit_and_save",
+        "_present_testimony",
+        "_maybe_study_desk",
+    ):
         if name not in methods:
             errors.append(f"нет метода {name}")
     if "draw_legend" not in (
@@ -204,6 +216,7 @@ def main():
     engine.quest_system = None
     engine.san_system = None
     engine.notified_quests = []
+    engine.fired_triggers = set()
     engine.flags = set()
     engine.visited_regions = set()
     engine.visited_maps = set()
@@ -285,6 +298,18 @@ def main():
     kind, _text = de.advance()
     if kind != "choices" or len(de.get_choices()) != 3:
         errors.append(f"выбор Настасьи: {kind} / {de.get_choices()}")
+    de_seek = DialogueEngine(db)
+    if de_seek.start_dialogue("dialogue_nastasya_intro", flags={"class_seeker"}, san=80):
+        de_seek.present()
+        de_seek.advance()
+        kind_s, _t = de_seek.advance()
+        n_seek = len(de_seek.get_choices())
+        if kind_s != "choices" or n_seek != 4:
+            errors.append(f"искатель должен слышать 4-й ответ Настасьи: {n_seek}")
+        elif not any("стёрт" in c for c in de_seek.get_choices()):
+            errors.append(f"нет классовой реплики искателя: {de_seek.get_choices()}")
+    else:
+        errors.append("не стартует диалог Настасьи для искателя")
     de.choose(2)
     fin = de.finish()
     if "nastasya_escape" not in (fin.get("flags") or []):
@@ -351,6 +376,290 @@ def main():
             errors.append("у нищего нет выбора")
     else:
         errors.append("не стартует диалог нищего")
+
+    for repeat_id in (
+        "dialogue_shpilkin_repeat",
+        "dialogue_nastasya_repeat",
+        "dialogue_panteleimon_repeat",
+        "dialogue_double_repeat",
+        "dialogue_innkeeper_repeat",
+        "dialogue_watchman_repeat",
+        "dialogue_beggar_repeat",
+        "dialogue_archivist_repeat",
+        "dialogue_possessed_repeat",
+    ):
+        de_r = DialogueEngine(db)
+        if not de_r.start_dialogue(repeat_id, flags=set(), san=70):
+            errors.append(f"не стартует повтор {repeat_id}")
+            continue
+        de_r.present()
+        kind, _text = de_r.advance()
+        if kind != "choices" or len(de_r.get_choices()) != 3:
+            errors.append(f"повтор без выбора: {repeat_id} {kind} / {de_r.get_choices()}")
+
+    stay_repeat = DialogueEngine(db)
+    if stay_repeat.start_dialogue("dialogue_shpilkin_repeat", flags=set(), san=70):
+        stay_repeat.present()
+        stay_repeat.advance()
+        stay_repeat.choose(1)
+        fin_stay = stay_repeat.finish()
+        if fin_stay.get("ending_id") != "stay":
+            errors.append(f"повтор Шпилькина не даёт остаться: {fin_stay}")
+    else:
+        errors.append("повтор Шпилькина не стартует для концовки")
+
+    possessed = db.get_character("possessed_patient")
+    if not possessed or possessed.get("dialogue_id") != "dialogue_possessed_intro":
+        errors.append(f"одержимый без речи: {possessed}")
+    de_p = DialogueEngine(db)
+    if not de_p.start_dialogue("dialogue_possessed_intro", flags=set(), san=50):
+        errors.append("не стартует диалог одержимого")
+    else:
+        de_p.present()
+        kind, _text = de_p.advance()
+        if kind != "choices" or len(de_p.get_choices()) != 3:
+            errors.append(f"одержимый без выбора: {kind} / {de_p.get_choices()}")
+        de_pr = DialogueEngine(db)
+        if de_pr.start_dialogue(
+            "dialogue_possessed_intro", flags={"class_rebel"}, san=50
+        ):
+            de_pr.present()
+            de_pr.advance()
+            if len(de_pr.get_choices()) != 4:
+                errors.append(
+                    f"бунтарь должен слышать 4-й ответ одержимого: {de_pr.get_choices()}"
+                )
+
+    if not db.get_character("archivist_klara"):
+        errors.append("нет архивариуса")
+    engine._load_map("hospital_floor_2")
+    floor2_ids = [getattr(e, "id", "") for e in engine.entities]
+    if "archivist_klara" not in floor2_ids:
+        errors.append("архивариус не стоит на 2 этаже")
+    if "note_case" not in floor2_ids:
+        errors.append("в архиве нет дела")
+    de4 = DialogueEngine(db)
+    if de4.start_dialogue("dialogue_archivist_intro", flags=set(), san=50):
+        de4.present()
+        de4.advance()
+        kind, _text = de4.advance()
+        if kind == "choices":
+            de4.choose(2)
+            fin4 = de4.finish()
+            if "archive_name" not in (fin4.get("flags") or []):
+                errors.append(f"архив не даёт имя: {fin4}")
+        else:
+            errors.append("у архивариуса нет выбора")
+    else:
+        errors.append("не стартует диалог архивариуса")
+
+    import tempfile
+    from engine.save_system import read_save
+    from engine.sanity_system import SanSystem
+    from engine.quest_system import QuestSystem
+
+    class _SanPlayer:
+        def __init__(self):
+            self.san = 100
+
+    san_p = _SanPlayer()
+    san_sys = SanSystem(san_p)
+    if san_sys.update():
+        errors.append("SAN без изменения не должен писать в лог")
+    san_p.san = 70
+    first_san = san_sys.update()
+    if len(first_san) != 1:
+        errors.append(f"порог SAN должен дать одну фразу, дал {first_san}")
+    if san_sys.update():
+        errors.append("повторный кадр без смены SAN снова пишет в лог")
+    san_p.san = 65
+    if san_sys.update():
+        errors.append("SAN внутри того же порога не должен писать снова")
+    san_p.san = 45
+    next_san = san_sys.update()
+    if len(next_san) != 1:
+        errors.append(f"следующий порог SAN: {next_san}")
+
+    qs = QuestSystem(db)
+    hud0 = " ".join(qs.get_active_quest_descriptions(set()))
+    if "записок найдено" in hud0 or "записок" in hud0:
+        errors.append(f"HUD квеста считает записки: {hud0}")
+    if "имя" not in hud0.lower() and "долг" not in hud0.lower():
+        errors.append(f"HUD квеста без имени/долга: {hud0}")
+    hud1 = " ".join(qs.get_active_quest_descriptions({"archive_name"}))
+    if "записок" in hud1:
+        errors.append(f"HUD после имени всё ещё про записки: {hud1}")
+    if "туман" not in hud1.lower():
+        errors.append(f"HUD после имени без тумана: {hud1}")
+
+    map_grids = {
+        "hospital_floor_1": floor,
+        "hospital_floor_2": floor2,
+        "hospital_basement": basement,
+        "street_outside": street,
+    }
+    trig_rows = db.conn.execute(
+        "SELECT id, map_id, x, y FROM triggers WHERE type = 'on_enter'"
+    ).fetchall()
+    if not trig_rows:
+        errors.append("нет живых триггеров")
+    for row in trig_rows:
+        mid, x, y = row["map_id"], row["x"], row["y"]
+        grid = map_grids.get(mid)
+        if grid is None:
+            errors.append(f"триггер {row['id']} на неизвестной карте {mid}")
+            continue
+        if y >= len(grid) or x >= len(grid[0]):
+            errors.append(f"триггер {row['id']} вне карты {mid} ({x},{y})")
+            continue
+        tile = grid[y][x]
+        if tile not in WALKABLE_TILES:
+            errors.append(f"триггер {row['id']} на '{tile}' {mid} ({x},{y})")
+    if db.get_triggers_at(15, 25, "hospital_floor_1"):
+        errors.append("старый триггер 15,25 жив")
+    if not db.get_triggers_at(12, 9, "hospital_floor_1"):
+        errors.append("нет шёпота у лампы 1 этажа")
+
+    engine.fired_triggers = set()
+    san_before = engine.player.san
+    r1 = engine.trigger_system.check_enter_trigger(
+        12, 9, engine.player, "hospital_floor_1", engine.fired_triggers
+    )
+    engine.fired_triggers.update(r1.fired_ids)
+    if not r1.messages:
+        errors.append("шёпот не стреляет")
+    if engine.player.san >= san_before:
+        errors.append("триггер не снял SAN")
+    san_mid = engine.player.san
+    r2 = engine.trigger_system.check_enter_trigger(
+        12, 9, engine.player, "hospital_floor_1", engine.fired_triggers
+    )
+    if r2.messages or r2.fired_ids or engine.player.san != san_mid:
+        errors.append("триггер сработал повторно")
+
+    engine._load_map("hospital_floor_1")
+    engine.player.x, engine.player.y = 12, 10
+    engine.player.hp = 7
+    engine.flags.add("archive_name")
+    engine.fired_triggers = {"trigger_whisper"}
+    with tempfile.TemporaryDirectory() as tmp:
+        slot = Path(tmp) / "last.json"
+        if not engine.save_game(slot):
+            errors.append("save_game не записал слот")
+        else:
+            payload = read_save(slot)
+            if not payload or payload.get("player", {}).get("hp") != 7:
+                errors.append(f"слот без HP: {payload}")
+            engine.player.hp = 1
+            engine.flags.discard("archive_name")
+            engine.fired_triggers.clear()
+            engine.player.x, engine.player.y = 3, 2
+            if not engine.load_game(slot):
+                errors.append("load_game не прочитал слот")
+            else:
+                if engine.player.hp != 7:
+                    errors.append(f"после загрузки HP {engine.player.hp}")
+                if "archive_name" not in engine.flags:
+                    errors.append("после загрузки потерян флаг")
+                if "trigger_whisper" not in engine.fired_triggers:
+                    errors.append("после загрузки потерян сработавший триггер")
+                if (engine.player.x, engine.player.y) != (12, 10):
+                    errors.append(
+                        f"после загрузки клетка {(engine.player.x, engine.player.y)}"
+                    )
+                if engine.current_map_id != "hospital_floor_1":
+                    errors.append(f"после загрузки карта {engine.current_map_id}")
+            engine.player.hp = 9
+            engine.fired_triggers.add("trigger_fog")
+            if engine.quit_and_save(slot) is not False:
+                errors.append("quit_and_save должен остановить цикл")
+            payload_quit = read_save(slot)
+            if not payload_quit or payload_quit.get("player", {}).get("hp") != 9:
+                errors.append("выход не записал слот")
+            elif "trigger_fog" not in (payload_quit.get("fired_triggers") or []):
+                errors.append("выход не запомнил триггер")
+
+    from engine.constants import CLASS_GLIMPSES, ENDING_POSTSCRIPTS, ending_text
+
+    if ending_text("flee", "seeker")[0] != ending_text("flee", "rebel")[0]:
+        errors.append("заголовок бегства не должен меняться классом")
+    if ending_text("flee", "seeker")[1] == ending_text("flee", "rebel")[1]:
+        errors.append("бегство искателя и бунтаря одного голоса")
+    if ending_text("stay", "mystic")[1] == ending_text("stay", "seeker")[1]:
+        errors.append("остаться мистика и искателя одного голоса")
+    if ending_text("madness", "rebel")[1] == ending_text("madness", "mystic")[1]:
+        errors.append("бред бунтаря и мистика одного голоса")
+    if len(ENDING_POSTSCRIPTS) != 9:
+        errors.append(f"нужно 9 постскриптумов, есть {len(ENDING_POSTSCRIPTS)}")
+    if ("mystic", "f2_study") not in CLASS_GLIMPSES:
+        errors.append("мистик не видит кабинет 2-го этажа")
+    if not db.get_triggers_at(8, 15, "hospital_floor_2"):
+        errors.append("нет черновика в кабинете 2-го этажа")
+    if floor2[15][8] not in WALKABLE_TILES:
+        errors.append("черновик кабинета на непроходимой клетке")
+
+    from engine.quest_system import QuestSystem as _QuestSystem
+
+    engine.quest_system = engine.quest_system or _QuestSystem(db)
+    note = engine.entity_factory.create_item("note_1")
+    if note:
+        engine.messages = []
+        if note.id in engine.quest_system.found_notes:
+            engine.quest_system.found_notes.remove(note.id)
+        engine._read_note(note)
+        joined = " ".join(engine.messages)
+        if "===" in joined:
+            errors.append(f"записка всё ещё лут-баннер: {joined}")
+        if "теряете" in joined or "записок найдено" in joined:
+            errors.append(f"записка говорит статами: {joined}")
+        if "Показание" not in joined:
+            errors.append(f"записка без слова «показание»: {joined}")
+
+    engine._load_map("hospital_floor_2")
+    engine.flags.discard("study_desk")
+    engine.player.x, engine.player.y = 14, 16
+    engine.messages = []
+    engine._try_move(1, 0)
+    if "study_desk" not in engine.flags:
+        errors.append("бюро кабинета молчит")
+    desk_text = " ".join(engine.messages)
+    if "Пациент вспоминает" not in desk_text and "черновик" not in desk_text.lower():
+        errors.append(f"бюро без черновика: {desk_text}")
+    before = list(engine.messages)
+    engine._try_move(1, 0)
+    extra = engine.messages[len(before) :]
+    if any("Пациент вспоминает" in m for m in extra):
+        errors.append("бюро кабинета повторяет черновик")
+
+    from engine.clinic_font import (
+        BUNDLED_FONT,
+        REQUIRED_CODEPOINTS,
+        find_font_path,
+        glyph_is_drawn,
+        load_clinic_tileset,
+    )
+    from engine import sound as clinic_sound
+
+    if "load_clinic_tileset" not in (ROOT / "main.py").read_text(encoding="utf-8"):
+        errors.append("main.py не подключает шрифт клиники")
+    if not BUNDLED_FONT.is_file():
+        errors.append("нет assets/fonts/DejaVuSansMono.ttf")
+    font_path = find_font_path()
+    if font_path is None:
+        errors.append("нет шрифта с кириллицей")
+    else:
+        tileset = load_clinic_tileset(font_path)
+        if tileset is None:
+            errors.append("тайлсет не загрузился")
+        else:
+            for code in REQUIRED_CODEPOINTS:
+                if not glyph_is_drawn(tileset, code):
+                    errors.append(f"пустой глиф {hex(code)}")
+    paper = clinic_sound._wav_for("paper")
+    door = clinic_sound._wav_for("door")
+    if paper[:4] != b"RIFF" or door[:4] != b"RIFF":
+        errors.append("клики не WAV")
+    clinic_sound.play("paper")
 
     db.close()
     if errors:
