@@ -76,6 +76,11 @@ class Renderer:
 
         # Ссылка на game_engine
         self.game_engine = None
+
+        # Всполохи SAN: пауза / вспышка, не каждый кадр по всей карте.
+        self._san_wait = 50
+        self._san_hold = 0
+        self._san_rim_marks = []
     
     def load_tile_colors_from_db(self, db_loader):
         """Загрузить цвета тайлов из БД."""
@@ -176,32 +181,9 @@ class Renderer:
         self.camera.move_to(player_x, player_y, map_width, map_height)
     
     def draw_map(self, tiles):
-        """Отрисовка карты с эффектами безумия."""
+        """Отрисовка карты. Низкий SAN — край зрения, не скрембл клеток."""
         map_height = len(tiles)
         map_width = len(tiles[0]) if map_height > 0 else 0
-        
-               
-        # Получаем эффекты безумия
-        sanity_effects = {'visual': 'normal'}
-        if self.game_engine and self.game_engine.san_system:
-            sanity_effects = self.game_engine.san_system.get_sanity_effects()
-        
-        # Определяем интенсивность искажений
-        distortion_level = 0
-        if sanity_effects['visual'] == 'flicker':
-            distortion_level = 0.1
-        elif sanity_effects['visual'] == 'distortion':
-            distortion_level = 0.3
-        elif sanity_effects['visual'] == 'heavy_distortion':
-            distortion_level = 0.6
-        elif sanity_effects['visual'] == 'chaos':
-            distortion_level = 0.9
-        
-        # Мерцание экрана
-        if sanity_effects['visual'] == 'flicker' and random.random() < 0.2:
-            for y in range(SCREEN_HEIGHT):
-                for x in range(SCREEN_WIDTH):
-                    self.console.bg[x, y] = libtcodpy.Color(20, 20, 20)
 
         # Край карты (57 клеток vs окно 60) и туман войны — не чёрный «пол».
         for sy in range(self.map_height):
@@ -209,51 +191,31 @@ class Renderer:
                 self.console.print(
                     sx, sy, ':', fg=COLOR_VOID_FG, bg=COLOR_VOID_BG
                 )
-        
-        # Искажение карты
+
         for y in range(map_height):
             for x in range(map_width):
-                # Проверяем, видна ли клетка
                 if not self.camera.is_visible(x, y):
                     continue
-                
+
                 screen_x, screen_y = self.camera.world_to_screen(x, y)
-                
+
                 if not (0 <= screen_x < self.map_width and 0 <= screen_y < self.map_height):
                     continue
-                
+
                 char = tiles[y][x]
-                
-                # Определяем уровень видимости
+
                 is_visible = self.fov_system and self.fov_system.is_visible(x, y)
                 is_explored = self.fov_system and self.fov_system.is_explored(x, y)
                 if not is_visible and not is_explored:
                     continue
-                
-                # Применяем искажения
-                if distortion_level > 0:
-                    if random.random() < distortion_level:
-                        # Искажаем символ
-                        char = random.choice(['.', '#', ' ', '≈', '≈'])
-                
-                # Цвет берём из БД
+
                 fg, bg = self._get_tile_color(char, is_visible, is_explored)
 
-                # Применяем освещённость с затуханием
                 if is_visible and self.fov_system:
                     illumination = self.fov_system.get_illumination(x, y)
-                    
-                    if illumination > 0.01:  # Клетка освещена
-                        # ← НОВОЕ: Boost пропорционален освещённости
-                        # illumination = 1.0 → boost = 100 (максимум)
-                        # illumination = 0.5 → boost = 50
-                        # illumination = 0.1 → boost = 10
-                        boost = illumination * 100
-                        
-                        # Ограничиваем максимум
-                        boost = min(100, boost)
-                        
-                        # Применяем boost к fg и bg
+
+                    if illumination > 0.01:
+                        boost = min(100, illumination * 100)
                         fg = libtcodpy.Color(
                             min(255, fg.r + int(boost)),
                             min(255, fg.g + int(boost)),
@@ -264,20 +226,154 @@ class Renderer:
                             min(255, bg.g + int(boost)),
                             min(255, bg.b + int(boost))
                         )
-                    
+
                 self.console.print(screen_x, screen_y, char, fg=fg, bg=bg)
-        
-        # Добавляем галлюцинации
-        if sanity_effects['hallucinations']:
-            for hallucination in sanity_effects['hallucinations']:
-                x, y = hallucination['x'], hallucination['y']
-                if self.camera.is_visible(x, y):
-                    screen_x, screen_y = self.camera.world_to_screen(x, y)
-                    if 0 <= screen_x < self.map_width and 0 <= screen_y < self.map_height:
-                        # Рисуем галлюцинацию
-                        char = random.choice(['≈', '±', '§', '¶'])
-                        self.console.print(screen_x, screen_y, char, fg=libtcodpy.Color(255, 0, 255))
-                        
+
+        self._draw_sanity_periphery(tiles, map_width, map_height)
+
+    def _sanity_level(self) -> int:
+        if not self.game_engine or not self.game_engine.san_system:
+            return 0
+        return int(self.game_engine.san_system.hallucination_level)
+
+    def _player_xy(self):
+        player = getattr(self.game_engine, 'player', None) if self.game_engine else None
+        if player is None:
+            return None
+        return player.x, player.y
+
+    def _cell_rgb(self, sx: int, sy: int):
+        bg = self.console.bg[sx, sy]
+        return int(bg[0]), int(bg[1]), int(bg[2])
+
+    def _paint_rim_bg(self, sx: int, sy: int, heat: float) -> None:
+        r, g, b = self._cell_rgb(sx, sy)
+        self.console.bg[sx, sy] = (
+            min(255, int(r * (1 - heat) + 150 * heat)),
+            min(255, int(g * (1 - heat) + 28 * heat)),
+            min(255, int(b * (1 - heat) + 24 * heat)),
+        )
+
+    def _collect_vision_rim(self, tiles, map_width: int, map_height: int) -> list:
+        """Край FOV и край панели карты. Центр зрения не трогаем."""
+        origin = self._player_xy()
+        rim = []
+        for y in range(map_height):
+            for x in range(map_width):
+                if not self.camera.is_visible(x, y):
+                    continue
+                if not (self.fov_system and self.fov_system.is_visible(x, y)):
+                    continue
+                sx, sy = self.camera.world_to_screen(x, y)
+                if not (0 <= sx < self.map_width and 0 <= sy < self.map_height):
+                    continue
+                if origin is not None:
+                    if max(abs(x - origin[0]), abs(y - origin[1])) <= 3:
+                        continue
+                at_fov_edge = False
+                for dx, dy in ((-1, 0), (1, 0), (0, -1), (0, 1)):
+                    nx, ny = x + dx, y + dy
+                    if not (0 <= nx < map_width and 0 <= ny < map_height):
+                        at_fov_edge = True
+                        break
+                    if not self.fov_system.is_visible(nx, ny):
+                        at_fov_edge = True
+                        break
+                at_panel_edge = (
+                    sx <= 1
+                    or sy <= 1
+                    or sx >= self.map_width - 2
+                    or sy >= self.map_height - 2
+                )
+                if at_fov_edge or at_panel_edge:
+                    rim.append((sx, sy))
+        return rim
+
+    def _pick_rim_marks(self, rim: list, level: int) -> list:
+        if not rim:
+            return []
+        want = {1: 6, 2: 11, 3: 16, 4: 22}.get(level, 6)
+        want = min(len(rim), want)
+        chosen = random.sample(rim, want)
+        marks = []
+        for i, (sx, sy) in enumerate(chosen):
+            kind = 'flash'
+            if level >= 2 and i % 4 == 0:
+                kind = 'glyph'
+            if level >= 4 and i == 0:
+                kind = 'figure'
+            marks.append((sx, sy, kind))
+        return marks
+
+    def _paint_san_marks(self, level: int) -> None:
+        heat = {1: 0.28, 2: 0.38, 3: 0.48, 4: 0.58}.get(level, 0.3)
+        for sx, sy, kind in self._san_rim_marks:
+            if not (0 <= sx < self.map_width and 0 <= sy < self.map_height):
+                continue
+            self._paint_rim_bg(sx, sy, heat)
+            if kind == 'glyph':
+                self.console.print(
+                    sx, sy, '≈', fg=libtcodpy.Color(160, 70, 65)
+                )
+            elif kind == 'figure':
+                self.console.print(
+                    sx, sy, '&', fg=libtcodpy.Color(95, 70, 72)
+                )
+
+    def _draw_sanity_vignette(self, level: int) -> None:
+        """Тихая кайма панели: не мигает, не закрывает центр."""
+        if level <= 0:
+            return
+        origin = self._player_xy()
+        player_screen = (
+            self.camera.world_to_screen(*origin) if origin is not None else None
+        )
+        width = 1 if level < 3 else 2
+        heat = 0.12 + 0.04 * level
+        for sy in range(self.map_height):
+            for sx in range(self.map_width):
+                if (
+                    sx >= width
+                    and sy >= width
+                    and sx < self.map_width - width
+                    and sy < self.map_height - width
+                ):
+                    continue
+                if player_screen is not None:
+                    if max(abs(sx - player_screen[0]), abs(sy - player_screen[1])) <= 3:
+                        continue
+                self._paint_rim_bg(sx, sy, heat)
+
+    def _draw_sanity_periphery(self, tiles, map_width: int, map_height: int) -> None:
+        level = self._sanity_level()
+        if level <= 0:
+            self._san_wait = 50
+            self._san_hold = 0
+            self._san_rim_marks = []
+            return
+
+        self._draw_sanity_vignette(level)
+
+        gap = {1: 110, 2: 78, 3: 52, 4: 36}.get(level, 80)
+        hold = {1: 9, 2: 11, 3: 13, 4: 15}.get(level, 10)
+
+        if self._san_hold > 0:
+            self._paint_san_marks(level)
+            self._san_hold -= 1
+            if self._san_hold == 0:
+                self._san_wait = gap
+                self._san_rim_marks = []
+            return
+
+        if self._san_wait > 0:
+            self._san_wait -= 1
+            return
+
+        rim = self._collect_vision_rim(tiles, map_width, map_height)
+        self._san_rim_marks = self._pick_rim_marks(rim, level)
+        self._san_hold = hold
+        self._paint_san_marks(level)
+
     def draw_entities(self, entities):
         """Отрисовка сущностей (NPC, предметов)."""
         # Сначала рисуем предметы (записки)
@@ -510,8 +606,12 @@ class Renderer:
                 self.console.print(1, y, desc, fg=libtcodpy.Color(200, 180, 100))
             
     def present(self, context):
-        """Вывод кадра на экран."""
-        context.present(self.console)
+        """Вывод кадра. keep_aspect держит шаг буквы; масштаб — под окно."""
+        context.present(
+            self.console,
+            keep_aspect=True,
+            integer_scaling=False,
+        )
         
     def is_light_source_visible(self, light_x: int, light_y: int, 
                                   light_radius: int, player_x: int, player_y: int,

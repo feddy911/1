@@ -1,6 +1,8 @@
 """Система диалогов с ветками выбора."""
 from typing import Optional, List, Dict, Tuple
 
+from engine.quest_system import enrich_flags
+
 
 class DialogueState:
     """Состояние текущего диалога."""
@@ -10,7 +12,7 @@ class DialogueState:
         self.character_id = dialogue_data['character_id']
         self.lines = dialogue_data['lines']
         self.by_order = {line['order_num']: line for line in self.lines}
-        self.flags = set(flags or [])
+        self.flags = enrich_flags(flags)
         self.san = san
         self.current_order = min(self.by_order) if self.by_order else 0
         self.finished = False
@@ -63,11 +65,30 @@ class DialogueState:
         opts.sort(key=lambda line: line['order_num'])
         return opts
 
+    def _skip_disallowed_text(self) -> Optional[Dict]:
+        """Реплики с requires_flag, которые не проходят — шаг к следующему номеру."""
+        seen = set()
+        while self.current_order not in seen:
+            seen.add(self.current_order)
+            line = self.by_order.get(self.current_order)
+            if not line:
+                return None
+            if self._is_choice(line) or self._choice_allowed(line):
+                return line
+            nxt = min(
+                (n for n in self.by_order if n > self.current_order),
+                default=None,
+            )
+            if nxt is None:
+                return None
+            self.current_order = nxt
+        return None
+
     def present(self) -> Tuple[str, Optional[str]]:
         """Показать текущий узел. ('text', строка), ('choices', None), ('end', None)."""
         if self.finished:
             return 'end', None
-        line = self.by_order.get(self.current_order)
+        line = self._skip_disallowed_text()
         if not line:
             self.finished = True
             return 'end', None

@@ -27,7 +27,7 @@ from engine.db_loader import DBLoader
 from engine.dialogue_engine import DialogueEngine
 from engine.entity_factory import Character, EntityFactory, Player
 from engine.fov_system import FOVSystem
-from engine.quest_system import QuestSystem
+from engine.quest_system import QuestSystem, can_pass_fog, has_debt, has_name
 from engine.renderer import Renderer
 from engine.sanity_system import SanSystem
 from engine.save_system import has_save, read_save, restore_map_states, write_save
@@ -808,6 +808,15 @@ class GameEngine:
         self.fired_triggers.update(trigger_result.fired_ids)
         for msg in trigger_result.messages:
             self.add_message(msg)
+        if (
+            "trigger_whisper" in trigger_result.fired_ids
+            and getattr(self.player, "id", "") == "mystic"
+            and "mystic_trace" not in self.flags
+        ):
+            self.flags.add("mystic_trace")
+            self.add_message(
+                "Шёпот узнаёт вас. Это уже не первый раз — вы просто не помните."
+            )
         self._apply_trigger_spawns(trigger_result, new_x, new_y)
         self._check_region(new_x, new_y)
         self._maybe_spawn_double()
@@ -1010,24 +1019,25 @@ class GameEngine:
             return
         if self.player.x < 50:
             return
-        notes = len(self.quest_system.found_notes) if self.quest_system else 0
-        can_flee = (
-            self.player.san >= 30
-            and (
-                notes >= 3
-                or 'nastasya_escape' in self.flags
-                or 'guilt_admitted' in self.flags
-                or 'sennaya_name' in self.flags
-                or 'archive_name' in self.flags
-            )
-        )
+        can_flee = self.player.san >= 30 and can_pass_fog(self.flags)
         if can_flee:
             self._trigger_ending('flee')
         elif self.player.san < 30:
             self._trigger_ending('madness')
         elif 'fog_blocked' not in self.flags:
             self.flags.add('fog_blocked')
-            self.add_message("Туман густой, как вата. Без правды он не выпускает.")
+            if has_name(self.flags) and not has_debt(self.flags):
+                self.add_message(
+                    "Имя в вате есть. Долг ещё в коридоре. Туман не выпускает."
+                )
+            elif has_debt(self.flags) and not has_name(self.flags):
+                self.add_message(
+                    "Вы должны — и безымянны. Туман не знает, кого выпускать."
+                )
+            else:
+                self.add_message(
+                    "Туман густой, как вата. Без имени и долга он не выпускает."
+                )
 
     def _trigger_ending(self, ending_id: str):
         if self.state == GameState.ENDING:
@@ -1067,6 +1077,8 @@ class GameEngine:
             'mystic': "Бумага ещё тёплая, будто только что отняли руку.",
             'rebel': "Можно скомкать. Вы не комкаете — пока.",
         }.get(getattr(self.player, 'id', ''))
+        if getattr(self.player, 'id', '') == 'seeker':
+            self.flags.add('seeker_trace')
         if extra:
             self.add_message(extra)
         return True

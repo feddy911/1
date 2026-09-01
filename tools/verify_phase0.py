@@ -480,6 +480,22 @@ def main():
     if len(next_san) != 1:
         errors.append(f"следующий порог SAN: {next_san}")
 
+    full = SanSystem(_SanPlayer())
+    if full.get_sanity_effects().get("visual"):
+        errors.append("полный рассудок уже искажает экран")
+    low = _SanPlayer()
+    low.san = 50
+    low_fx = SanSystem(low).get_sanity_effects()
+    if low_fx.get("visual") != "periphery":
+        errors.append(f"низкий SAN visual={low_fx.get('visual')}")
+    if low_fx.get("hallucinations"):
+        errors.append("галлюцинации размазаны по карте")
+    renderer_src = (ROOT / "engine" / "renderer.py").read_text(encoding="utf-8")
+    if "distortion_level" in renderer_src:
+        errors.append("карта всё ещё скремблируется при низком SAN")
+    if "_draw_sanity_periphery" not in renderer_src:
+        errors.append("нет периферии SAN")
+
     qs = QuestSystem(db)
     hud0 = " ".join(qs.get_active_quest_descriptions(set()))
     if "записок найдено" in hud0 or "записок" in hud0:
@@ -491,6 +507,41 @@ def main():
         errors.append(f"HUD после имени всё ещё про записки: {hud1}")
     if "туман" not in hud1.lower():
         errors.append(f"HUD после имени без тумана: {hud1}")
+    if "долг" not in hud1.lower():
+        errors.append(f"HUD после имени не просит долг: {hud1}")
+    if "уже слышал" in hud1:
+        errors.append(f"одно имя уже закрывает HUD: {hud1}")
+    hud_debt = " ".join(qs.get_active_quest_descriptions({"guilt_admitted"}))
+    if "имен" not in hud_debt.lower():
+        errors.append(f"HUD после долга без имени: {hud_debt}")
+    hud_ok = " ".join(
+        qs.get_active_quest_descriptions({"archive_name", "guilt_admitted"})
+    )
+    if "уже слышал" not in hud_ok:
+        errors.append(f"HUD с обеими правдами: {hud_ok}")
+
+    from engine.quest_system import can_pass_fog, has_debt, has_name
+
+    if can_pass_fog({"archive_name"}) or can_pass_fog({"guilt_admitted"}):
+        errors.append("один флаг правды открывает туман")
+    if not can_pass_fog({"archive_name", "guilt_admitted"}):
+        errors.append("имя и долг вместе не открывают туман")
+    if not has_name({"sennaya_name"}) or not has_debt({"nastasya_escape"}):
+        errors.append("флаги имени и долга перепутаны")
+
+    de_h = DialogueEngine(db)
+    if de_h.start_dialogue("dialogue_shpilkin_repeat", flags={"archive_name"}, san=70):
+        kind_h, text_h = de_h.present()
+        if kind_h != "text" or "долг" not in (text_h or "").lower():
+            errors.append(f"Шпилькин не слышит имя: {kind_h} {text_h}")
+        kind_h, _ = de_h.advance()
+        n_h = len(de_h.get_choices())
+        if kind_h != "choices" or n_h < 4:
+            errors.append(f"Шпилькин после имени без 4-й реплики: {de_h.get_choices()}")
+        elif not any("назвал" in c.lower() for c in de_h.get_choices()):
+            errors.append(f"нет вопроса про имя: {de_h.get_choices()}")
+    else:
+        errors.append("не стартует повтор Шпилькина с именем")
 
     map_grids = {
         "hospital_floor_1": floor,
@@ -622,6 +673,8 @@ def main():
     engine._try_move(1, 0)
     if "study_desk" not in engine.flags:
         errors.append("бюро кабинета молчит")
+    if "seeker_trace" not in engine.flags:
+        errors.append("искатель не оставляет след на бюро")
     desk_text = " ".join(engine.messages)
     if "Пациент вспоминает" not in desk_text and "черновик" not in desk_text.lower():
         errors.append(f"бюро без черновика: {desk_text}")
@@ -631,17 +684,62 @@ def main():
     if any("Пациент вспоминает" in m for m in extra):
         errors.append("бюро кабинета повторяет черновик")
 
+    from engine.game_engine import GameState as _GameState
+
+    saved_end, saved_state = engine.ending_id, engine.state
+    engine._load_map("street_outside")
+    engine.player.san = 80
+    engine.player.x, engine.player.y = 51, 10
+    engine.flags = {"archive_name"}
+    engine.ending_id = None
+    engine.state = _GameState.PLAYING
+    engine._check_street_ending()
+    if engine.ending_id:
+        errors.append(f"одно имя дало конец {engine.ending_id}")
+    engine.flags.add("guilt_admitted")
+    engine.flags.discard("fog_blocked")
+    engine.ending_id = None
+    engine.state = _GameState.PLAYING
+    engine._check_street_ending()
+    if engine.ending_id != "flee":
+        errors.append("имя и долг не открывают бегство")
+    engine.ending_id = None
+    engine.state = _GameState.PLAYING
+    engine.flags = {"class_seeker"}
+    old_notes = list(engine.quest_system.found_notes)
+    engine.quest_system.found_notes = ["note_1", "note_2", "note_3"]
+    engine._check_street_ending()
+    if engine.ending_id == "flee":
+        errors.append("три записки снова ключ от тумана")
+    engine.ending_id = saved_end
+    engine.state = saved_state
+    engine.quest_system.found_notes = old_notes
+
+    old_pid = engine.player.id
+    engine.player.id = "mystic"
+    engine.flags.discard("mystic_trace")
+    engine.fired_triggers = set()
+    engine._load_map("hospital_floor_1")
+    engine.player.x, engine.player.y = 12, 10
+    engine._try_move(0, -1)
+    if "mystic_trace" not in engine.flags:
+        errors.append("мистик не оставляет след у лампы")
+    engine.player.id = old_pid
+
     from engine.clinic_font import (
         BUNDLED_FONT,
         REQUIRED_CODEPOINTS,
         find_font_path,
         glyph_is_drawn,
+        glyph_width_fill,
         load_clinic_tileset,
     )
     from engine import sound as clinic_sound
 
     if "load_clinic_tileset" not in (ROOT / "main.py").read_text(encoding="utf-8"):
         errors.append("main.py не подключает шрифт клиники")
+    if "keep_aspect=True" not in (ROOT / "engine" / "renderer.py").read_text(encoding="utf-8"):
+        errors.append("кадр растягивает клетки: нет keep_aspect")
     if not BUNDLED_FONT.is_file():
         errors.append("нет assets/fonts/DejaVuSansMono.ttf")
     font_path = find_font_path()
@@ -655,6 +753,13 @@ def main():
             for code in REQUIRED_CODEPOINTS:
                 if not glyph_is_drawn(tileset, code):
                     errors.append(f"пустой глиф {hex(code)}")
+            fill_m = glyph_width_fill(tileset, ord("M"))
+            if fill_m < 0.65:
+                errors.append(f"глиф M слишком узкий в клетке: {fill_m:.2f}")
+            if tileset.tile_width >= tileset.tile_height:
+                errors.append(
+                    f"клетка {tileset.tile_width}x{tileset.tile_height} не уже высоты"
+                )
     paper = clinic_sound._wav_for("paper")
     door = clinic_sound._wav_for("door")
     if paper[:4] != b"RIFF" or door[:4] != b"RIFF":

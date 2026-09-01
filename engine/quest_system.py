@@ -3,13 +3,33 @@ import json
 from typing import List, Optional, Set
 
 
-# Флаги, после которых туман на улице уже может услышать правду.
-_VOICE_FLAGS = (
-    "guilt_admitted",
-    "sennaya_name",
-    "archive_name",
-    "nastasya_escape",
-)
+# Имя — назвал себя. Долг — кому должен. Туман слышит только оба.
+NAME_FLAGS = frozenset({"archive_name", "sennaya_name"})
+DEBT_FLAGS = frozenset({"guilt_admitted", "nastasya_escape"})
+
+
+def has_name(flags: Optional[Set[str]] = None) -> bool:
+    return bool(set(flags or ()) & NAME_FLAGS)
+
+
+def has_debt(flags: Optional[Set[str]] = None) -> bool:
+    return bool(set(flags or ()) & DEBT_FLAGS)
+
+
+def can_pass_fog(flags: Optional[Set[str]] = None) -> bool:
+    return has_name(flags) and has_debt(flags)
+
+
+def enrich_flags(flags: Optional[Set[str]] = None) -> Set[str]:
+    """Производные флаги для веток диалога: has_name / has_debt / has_both."""
+    filled = set(flags or ())
+    if has_name(filled):
+        filled.add("has_name")
+    if has_debt(filled):
+        filled.add("has_debt")
+    if "has_name" in filled and "has_debt" in filled:
+        filled.add("has_both")
+    return filled
 
 
 class QuestSystem:
@@ -75,13 +95,17 @@ class QuestSystem:
         return 0, 0
 
     def get_active_quest_descriptions(self, flags: Optional[Set[str]] = None) -> List[str]:
-        """Цель на HUD: имя и долг, не «N/M записок»."""
+        """Цель на HUD: имя и долг по отдельности, не «N/M записок»."""
         flags = flags or set()
-        if any(flag in flags for flag in _VOICE_FLAGS):
-            return ["Туман на востоке улицы ждёт правду, которую вы уже сказали."]
-        if len(self.found_notes) >= 3:
-            return ["Бумаг довольно. Туман услышит имя — если вспомните долг."]
-        return ["Вспомнить имя. Или долг. Без этого улица — стена."]
+        named = has_name(flags)
+        owed = has_debt(flags)
+        if named and owed:
+            return ["Имя и долг сказаны. Туман на востоке улицы уже слышал."]
+        if named:
+            return ["Имя есть. Долг ещё в коридоре. Туман на востоке ждёт оба."]
+        if owed:
+            return ["Долг сказан. Имени туман не слышал."]
+        return ["Вспомнить имя. И долг. Без обоих улица — стена."]
 
     def is_all_completed(self) -> bool:
         """Проверить, все ли квесты завершены."""

@@ -80,46 +80,16 @@ class SanSystem:
         return self._event_for_level(self.hallucination_level)
 
     def get_sanity_effects(self) -> dict:
-        """Получить текущие эффекты безумия.
+        """Эффекты для рендера.
 
-        control не инвертируем и не рандомизируем: молчащие клавиши
-        уже принимали за поломку.
+        Карту не скремблируем и не гасим весь кадр: только край зрения.
+        control не инвертируем: молчащие клавиши уже принимали за поломку.
         """
-        effects = {
-            'visual': None,
+        level = self.hallucination_level
+        return {
+            'visual': 'periphery' if level else None,
+            'level': level,
             'sound': None,
             'control': None,
-            'hallucinations': []
+            'hallucinations': [],
         }
-
-        if self.hallucination_level >= 1:
-            effects['visual'] = 'flicker'
-
-        if self.hallucination_level >= 2:
-            effects['visual'] = 'distortion'
-            effects['hallucinations'] = self._generate_hallucinations(2)
-
-        if self.hallucination_level >= 3:
-            effects['visual'] = 'heavy_distortion'
-            effects['hallucinations'] = self._generate_hallucinations(4)
-
-        if self.hallucination_level >= 4:
-            effects['visual'] = 'chaos'
-            effects['hallucinations'] = self._generate_hallucinations(6)
-
-        return effects
-
-    def _generate_hallucinations(self, count: int) -> list:
-        """Сгенерировать галлюцинации."""
-        hallucinations = []
-        for _ in range(count):
-            type_ = random.choice(['shadow', 'wall', 'voice', 'figure'])
-            x = random.randint(0, 79)
-            y = random.randint(0, 49)
-            hallucinations.append({
-                'type': type_,
-                'x': x,
-                'y': y,
-                'duration': random.randint(1, 5)
-            })
-        return hallucinations
