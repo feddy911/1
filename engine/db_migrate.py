@@ -1,6 +1,8 @@
 """Идемпотентные правки схемы и данных фазы 0."""
 from typing import List, Tuple
 
+from engine.palette import INKS, TILE_INKS, iter_explored_colors, iter_tile_colors
+
 
 PLACEMENTS: List[Tuple[str, int, int, str, str]] = [
     # Первый этаж — палаты, коридор, кабинет
@@ -28,33 +30,8 @@ PLACEMENTS: List[Tuple[str, int, int, str, str]] = [
 ]
 
 
-TILE_COLORS = [
-    ("B", "#6a5a4a", "#3a322c", "Кровать"),
-    ("T", "#8a6a40", "#4a3828", "Стол"),
-    ("C", "#7a6048", "#3a3028", "Стул"),
-    ("H", "#5a5048", "#322c28", "Шкаф"),
-    ("O", "#6a5840", "#3a3228", "Письменный стол"),
-    ("E", "#64dcff", "#3c8ca0", "Выход"),
-    ("s", "#5088a0", "#2c5a68", "Лестница вниз"),
-    ("W", "#aaccff", "#6688aa", "Окно"),
-    ("*", "#fff064", "#b4a032", "Источник света"),
-    ("+", "#ff6666", "#803232", "Расходник"),
-    ("=", "#1a3048", "#0c1828", "Канал"),
-]
-
-TILE_COLORS_EXPLORED = [
-    ("B", "#3a322c", "#1e1a16"),
-    ("T", "#4a3828", "#241c14"),
-    ("C", "#3a3028", "#1e1814"),
-    ("H", "#322c28", "#1a1614"),
-    ("O", "#3a3228", "#1e1a14"),
-    ("E", "#326e82", "#1e4650"),
-    ("s", "#284858", "#142830"),
-    ("W", "#445566", "#223344"),
-    ("*", "#827832", "#5a5019"),
-    ("+", "#823232", "#401919"),
-    ("=", "#0c1828", "#060c14"),
-]
+TILE_COLORS = iter_tile_colors()
+TILE_COLORS_EXPLORED = iter_explored_colors()
 
 TILE_TRANSPARENCY = [
     ("#", 1, "Стена"),
@@ -63,6 +40,7 @@ TILE_TRANSPARENCY = [
     ("H", 1, "Шкаф"),
     ("O", 1, "Письменный стол"),
     (".", 0, "Пол"),
+    ("'", 0, "Открытая дверь"),
     ("D", 0, "Дверь"),
     ("W", 0, "Окно"),
     ("S", 0, "Лестница"),
@@ -103,11 +81,12 @@ def apply_migrations(conn) -> None:
         """UPDATE light_sources
            SET description = 'Лунный свет из окна',
                symbol = 'W',
-               color = '#aaccff',
+               color = ?,
                radius = 5,
                intensity = 0.7,
                flicker = 0
-           WHERE id = 'window'"""
+           WHERE id = 'window'""",
+        (INKS["frost"],),
     )
 
     conn.execute(
@@ -121,8 +100,9 @@ def apply_migrations(conn) -> None:
     )
     conn.execute(
         """UPDATE characters
-           SET symbol = '&', color = '#8877aa'
-           WHERE id = 'shadow_enemy'"""
+           SET symbol = '&', color = ?
+           WHERE id = 'shadow_enemy'""",
+        (INKS["ice"],),
     )
 
     def _upsert(table: str, symbol: str, fields: dict) -> None:
@@ -298,12 +278,13 @@ def _apply_phase1(conn) -> None:
         """INSERT INTO items
            (id, type, name, description, damage_die, healing, sanity_restore,
             sanity_damage, symbol, color, is_quest_item, use_effect, content)
-           VALUES (?, 'note', ?, ?, '', 0, 0, -5, '≈', '#c8b48c', 1, 'read_note', ?)
+           VALUES (?, 'note', ?, ?, '', 0, 0, -5, '≈', ?, 1, 'read_note', ?)
            ON CONFLICT(id) DO UPDATE SET content = excluded.content""",
         (
             "letter_1",
             "Письмо из Петербурга",
             "Конверт с печатью академии.",
+            INKS["paper"],
             "Уважаемый доктор фон Шпилькин! Новые препараты высланы. "
             "Результаты — к концу месяца. Не подведите нас.",
         ),
@@ -329,6 +310,8 @@ def _apply_phase1(conn) -> None:
     _apply_phase6(conn)
     _apply_phase7(conn)
     _apply_phase10(conn)
+    _apply_phase11(conn)
+    _apply_palette(conn)
 
 
 PLACEMENTS_PHASE1: List[Tuple[str, int, int, str, str]] = [
@@ -439,18 +422,21 @@ def _seed_dialogues(conn) -> None:
         [
             (1, "npc", "Имя и долг. Туман сыт. Идите, пока не передумал.", 0, 10, None, None, None, "has_both"),
             (2, "npc", "Вы назвались. Капли от этого не слаще — долг ещё в коридоре.", 0, 10, None, None, None, "has_name"),
-            (3, "npc", "Вина есть. Имени нет. Номер в журнале не выпускают.", 0, 10, None, None, None, "has_debt"),
-            (4, "npc", "Вы всё ходите. Значит, капли ещё не взяли.", 0, 10, None, None, None),
+            (3, "npc", "Лизавете должны. Имени нет. Номер в журнале не выпускают.", 0, 10, None, None, None, "guilt_admitted"),
+            (4, "npc", "Настасье должны выход. Имени нет. Вата сытая.", 0, 10, None, None, None, "nastasya_escape"),
+            (5, "npc", "Вы всё ходите. Значит, капли ещё не взяли.", 0, 10, None, None, None),
             (10, "player", "Что в подвале?", 0, 20, 1, None, None),
             (11, "player", "Дайте микстуру. Хочу кончить это.", -8, 30, 1, "trust_doctor", None),
             (12, "player", "Я уйду на улицу.", 0, 40, 1, None, None),
             (13, "player", "Я назвался. Этого мало?", 0, 50, 1, None, None, "has_name"),
-            (14, "player", "Я должен. Пустите.", 0, 51, 1, None, None, "has_debt"),
+            (14, "player", "Лизавете. В канале. Пустите.", 0, 51, 1, None, None, "guilt_admitted"),
+            (15, "player", "Настасье. Я просил выход.", 0, 52, 1, None, None, "nastasya_escape"),
             (20, "npc", "Там кормят тех, кто слишком много видел. Не спускайтесь голодными.", -3, -1, None, None, None),
             (30, "npc", "Хорошо. Ложитесь. Утром не будет ни клиники, ни вас.", -15, -1, None, None, "stay"),
             (40, "npc", "Улица не клиника. Клиника честнее: она хотя бы запирает.", 0, -1, None, None, None),
             (50, "npc", "Мало. Туман ест по отдельности: имя — бумага, долг — кровь.", 0, -1, None, None, None),
-            (51, "npc", "Долг без имени — клетка. Назовите себя, хотя бы плохо.", 0, -1, None, None, None),
+            (51, "npc", "Лизавете мало без вашего имени. Канал знает её. Туман — вас ещё нет.", 0, -1, None, None, None),
+            (52, "npc", "Настасье вы должны выход. Безымянных вата не считает.", 0, -1, None, None, None),
         ],
     )
     lines += rows(
@@ -464,7 +450,7 @@ def _seed_dialogues(conn) -> None:
             (20, "npc", "Тогда не спите. Пантелеймон носит вниз тех, кто слишком много видел.", -3, 21, None, "spoke_nastasya", None),
             (21, "npc", "Подвал. Там не лечат. Там кормят.", 0, -1, None, None, None),
             (30, "npc", "Как скажете. Бред тоже умеет убивать.", -5, -1, None, "spoke_nastasya", None),
-            (40, "npc", "Улица не выпускает безымянных. Соберите бумаги Шпилькина — или туман съест вас.", 0, 41, None, "spoke_nastasya", None),
+            (40, "npc", "Вы уже должны мне этот вопрос. Улица не выпускает безымянных. Бумаги Шпилькина — или туман съест вас.", 0, 41, None, "spoke_nastasya", None),
             (41, "narrator", "Она прячет лицо в ладонях. Платье когда-то было бальным.", 0, -1, None, None, None),
             (13, "player", "Имена на полу стёрты рукавом. Как выйти?", 0, 50, 1, "nastasya_escape", None, "class_seeker"),
             (14, "player", "Они шепчут уменьшительное. Это моё?", -4, 51, 1, None, None, "class_mystic"),
@@ -479,20 +465,23 @@ def _seed_dialogues(conn) -> None:
         [
             (1, "npc", "Имя и долг. Вата на востоке уже тонкая. Идите.", 0, 10, None, None, None, "has_both"),
             (2, "npc", "Вы назвались. Долг ещё шепчет в углу.", 0, 10, None, None, None, "has_name"),
-            (3, "npc", "Вы просили выход. Без имени вата сытая.", 0, 10, None, None, None, "has_debt"),
-            (4, "npc", "Вы вернулись. Значит, ещё не назвали вас вслух.", 0, 10, None, None, None),
+            (3, "npc", "Лизавете должны. Без имени вата сытая.", 0, 10, None, None, None, "guilt_admitted"),
+            (4, "npc", "Вы просили у меня выход. Долг — мне. Без имени вата сытая.", 0, 10, None, None, None, "nastasya_escape"),
+            (5, "npc", "Вы вернулись. Значит, ещё не назвали вас вслух.", 0, 10, None, None, None),
             (10, "player", "Как пройти туман?", 0, 20, 1, None, None),
             (11, "player", "Доктор лжёт?", 0, 30, 1, None, None),
             (12, "player", "Мне нельзя спать?", -2, 40, 1, None, None),
             (13, "player", "Я вспомнил имя. Этого хватит?", 0, 50, 1, None, None, "has_name"),
-            (14, "player", "Я должен. Пустите.", 0, 51, 1, None, None, "has_debt"),
+            (14, "player", "Лизавете. Этого мало?", 0, 51, 1, None, None, "guilt_admitted"),
             (15, "player", "Шёпот у лампы был не мой.", -2, 52, 1, None, None, "mystic_trace"),
+            (16, "player", "Я просил у вас выход. Это долг?", 0, 53, 1, None, None, "nastasya_escape"),
             (20, "npc", "Именем и долгом вместе. Иначе вата съест шаг.", 0, -1, None, None, None),
             (30, "npc", "Он лечит так, чтобы некого было выписывать. Не пейте, если хотите улицу.", -3, -1, None, None, None),
             (40, "npc", "Сон здесь — дверь вниз. Пантелеймон ждёт тех, кто закрыл глаза.", -2, -1, None, None, None),
             (50, "npc", "Имени мало. Туман хочет знать, кому вы должны.", 0, -1, None, None, None),
-            (51, "npc", "Долга мало. Безымянных вата не считает.", 0, -1, None, None, None),
+            (51, "npc", "Лизавете мало. Туман хочет имя, не только воду.", 0, -1, None, None, None),
             (52, "npc", "Значит, он уже звал. Не отвечайте второй раз — даже кивком.", -3, -1, None, None, None),
+            (53, "npc", "Да. Мне. И имени, которого у вас нет.", 0, -1, None, None, None),
         ],
     )
     lines += rows(
@@ -505,7 +494,7 @@ def _seed_dialogues(conn) -> None:
             (20, "npc", "От палат — у меня. От кабинета доктора ищите сами. От подвала — только у него.", 0, 21, None, "spoke_panteleimon", None),
             (21, "npc", "Не говорите, что я сказал.", -2, -1, None, None, None),
             (30, "npc", "Немец. Но ночи у него русские. И голодные.", -4, -1, None, "spoke_panteleimon", None),
-            (40, "npc", "Тогда вам сюда и дорога. Вина здесь не лечится — её кормят.", -4, -1, None, "spoke_panteleimon", None),
+            (40, "npc", "Лизавету канал держит. Вас — тоже. Вина здесь не моется.", -4, -1, None, "spoke_panteleimon", None),
             (13, "player", "Ключ от палат носите на поясе, не в кармане?", 0, 50, 1, None, None, "class_seeker"),
             (14, "player", "За вашей спиной молятся голосом не из горла.", -3, 51, 1, None, None, "class_mystic"),
             (15, "player", "Отдайте ключи. Не просите дважды.", 0, 52, 1, None, None, "class_rebel"),
@@ -517,15 +506,25 @@ def _seed_dialogues(conn) -> None:
     lines += rows(
         "dialogue_panteleimon_repeat",
         [
-            (1, "npc", "Я ничего не говорил. Слышите? Ничего.", 0, 10, None, None, None),
+            (1, "npc", "Имя и долг. Я ничего не слышал. Идите, пока ключи ещё у меня.", 0, 10, None, None, None, "has_both"),
+            (2, "npc", "Вы назвались. Ключи от этого не легче — долг ещё в коридоре.", 0, 10, None, None, None, "has_name"),
+            (3, "npc", "Лизавете должны. Безымянных ночью носят вниз.", 0, 10, None, None, None, "guilt_admitted"),
+            (4, "npc", "Настасье должны выход. Безымянных ночью носят вниз.", 0, 10, None, None, None, "nastasya_escape"),
+            (5, "npc", "Я ничего не говорил. Слышите? Ничего.", 0, 10, None, None, None),
             (10, "player", "Ключи. Ещё раз.", 0, 20, 1, None, None),
             (11, "player", "Тени в столовой — ваши?", 0, 30, 1, None, None),
             (12, "player", "(признаться) Я виноват.", -6, 40, 1, "guilt_admitted", None),
             (13, "player", "Замок орёт до сих пор.", 0, 50, 1, None, None, "broke_door"),
+            (14, "player", "Я назвался. Отдайте ключи.", 0, 51, 1, None, None, "has_name"),
+            (15, "player", "Лизавете. Пустите.", 0, 52, 1, None, None, "guilt_admitted"),
+            (16, "player", "Настасье выход. Этого мало?", 0, 53, 1, None, None, "nastasya_escape"),
             (20, "npc", "Палаты — у меня. Кабинет — ищите. Подвал — у немца. Это уже слишком много.", -2, -1, None, None, None),
             (30, "npc", "Не мои. Мои носят вниз. Те приходят сами, когда смотришь слишком долго.", -3, -1, None, None, None),
-            (40, "npc", "Тогда вам сюда. Вину здесь не моют — её ставят на учёт.", -3, -1, None, None, None),
+            (40, "npc", "Лизавете — учёт в воде. Вам сюда. Вину здесь не моют.", -3, -1, None, None, None),
             (50, "npc", "Это были вы. Ключи после такого прячут. Немец не спит.", -2, -1, None, None, None),
+            (51, "npc", "Мало. Ключ слушает два слова. Вы сказали одно.", -2, -1, None, None, None),
+            (52, "npc", "Лизавете мало без имени. Ночью таких несут вниз.", -3, -1, None, None, None),
+            (53, "npc", "Настасье — дверь. Вам — имя. Иначе подвал.", -2, -1, None, None, None),
         ],
     )
 
@@ -575,7 +574,7 @@ def _seed_double(conn) -> None:
             0,
             "self",
             "&",
-            "#c8c8d2",
+            INKS["ash"],
             "dialogue_double_intro",
         ),
     )
@@ -604,13 +603,13 @@ def _seed_double(conn) -> None:
             ("dialogue_double_intro", 12, "player", "Простите меня.", -10, 40, 1,
              "guilt_admitted", None),
             ("dialogue_double_intro", 20, "npc",
-             "Я — то, что вы оставили в канале. Имя. Лицо. Долг.", -6, -1, None,
+             "Я — то, что вы оставили в канале вместо Лизаветы. Имя. Долг.", -6, -1, None,
              "spoke_double", None),
             ("dialogue_double_intro", 30, "npc",
              "Нет. Есть. Разница вам уже не принадлежит.", -4, -1, None,
              "spoke_double", None),
             ("dialogue_double_intro", 40, "npc",
-             "Поздно. Но спасибо, что сказали. Туман это слышит.", -8, -1, None,
+             "Поздно для Лизаветы. Туман слышит имя в воде.", -8, -1, None,
              "spoke_double", None),
             ("dialogue_double_intro", 13, "player",
              "На халате тот же шов, что у меня. Откуда?", -2, 50, 1, None, None, "class_seeker"),
@@ -625,17 +624,34 @@ def _seed_double(conn) -> None:
             ("dialogue_double_intro", 52, "npc",
              "Отойду. В зеркале тесно всё равно.", -2, -1, None, "spoke_double", None),
             ("dialogue_double_repeat", 1, "npc",
+             "Имя и долг. Мы оба сыты. Идите, пока нас двое.", 0, 10, None, None, None, "has_both"),
+            ("dialogue_double_repeat", 2, "npc",
+             "Вы назвались. Я всё ещё держу долг — в канале, где Лизавета.", 0, 10, None, None, None, "has_name"),
+            ("dialogue_double_repeat", 3, "npc",
+             "Лизавете должны. Безымянным я не отдаю отражение.", 0, 10, None, None, None, "guilt_admitted"),
+            ("dialogue_double_repeat", 4, "npc",
+             "Настасье — дверь. Мне — канал. Безымянным не отдают ни то ни другое.", 0, 10, None, None, None, "nastasya_escape"),
+            ("dialogue_double_repeat", 5, "npc",
              "Вы вернулись. Или это я не уходил.", 0, 10, None, None, None),
             ("dialogue_double_repeat", 10, "player", "Что ты взял у меня?", -2, 20, 1, None, None),
             ("dialogue_double_repeat", 11, "player", "Исчезни.", 0, 30, 1, None, None),
             ("dialogue_double_repeat", 12, "player", "Прости. Ещё раз.", -8, 40, 1,
              "guilt_admitted", None),
+            ("dialogue_double_repeat", 13, "player", "Я назвался. Отдай лицо.", 0, 50, 1, None, None, "has_name"),
+            ("dialogue_double_repeat", 14, "player", "Лизавете. Отдай лицо.", 0, 51, 1, None, None, "guilt_admitted"),
+            ("dialogue_double_repeat", 15, "player", "Настасье выход. Этого мало?", 0, 52, 1, None, None, "nastasya_escape"),
             ("dialogue_double_repeat", 20, "npc",
-             "Имя. Отражение. То место в канале, куда вы не смотрите.", -4, -1, None, None, None),
+             "Лизавету. Отражение. То место в канале, куда вы не смотрите.", -4, -1, None, None, None),
             ("dialogue_double_repeat", 30, "npc",
              "Исчезну. В зеркале. Тогда вы останетесь один — и это хуже.", -3, -1, None, None, None),
             ("dialogue_double_repeat", 40, "npc",
-             "Слышу. Туман тоже. Идите, пока нас двое, а не одно.", -6, -1, None, None, None),
+             "Слышу. Лизавета тоже. Идите, пока нас двое, а не одно.", -6, -1, None, None, None),
+            ("dialogue_double_repeat", 50, "npc",
+             "Мало. Я взял оба: имя в бумаге, Лизавету в воде. Верните второе.", -2, -1, None, None, None),
+            ("dialogue_double_repeat", 51, "npc",
+             "Лизавета в воде. Имя — на берегу. Верните оба.", -3, -1, None, None, None),
+            ("dialogue_double_repeat", 52, "npc",
+             "Настасье — дверь. Мне — канал. Безымянным не отдают ни то ни другое.", -3, -1, None, None, None),
             ]
         ],
     )
@@ -768,13 +784,15 @@ def _apply_phase3(conn) -> None:
         """INSERT INTO items
            (id, type, name, description, damage_die, healing, sanity_restore,
             sanity_damage, symbol, color, is_quest_item, use_effect, content)
-           VALUES (?, 'note', ?, ?, '', 0, 0, -4, '≈', '#c8b48c', 1, 'read_note', ?)
+           VALUES (?, 'note', ?, ?, '', 0, 0, -4, '≈', ?, 1, 'read_note', ?)
            ON CONFLICT(id) DO UPDATE SET content = excluded.content""",
         (
             "note_canal",
             "Записка с набережной",
             "Мокрый клочок. Чернила расползлись к каналу.",
-            "Имени нет — есть долг. Кто вспомнит, того туман пропустит.",
+            INKS["paper"],
+            "Лизавете. Канал взял уменьшительное. Кто вспомнит долг по имени — "
+            "того туман ещё может пропустить.",
         ),
     )
 
@@ -795,7 +813,7 @@ def _apply_phase3(conn) -> None:
         "innkeeper_semyon", "npc", "Семён", "Трактирщик",
         "Щёки красные, глаза нет. Полотенце на плече как епитрахиль.",
         8, 10, 0, "1d4", 10, 10, 12, 10, 12, "dialogue", 0, "city",
-        "&", "#d2b48c", "dialogue_innkeeper_intro",
+        "&", INKS["ochre"], "dialogue_innkeeper_intro",
     ))
     _upsert_npc(conn, (
         "watchman_petrov", "npc", "Петров", "Городовой",
@@ -831,13 +849,23 @@ def _apply_phase3(conn) -> None:
             (52, "npc", "Верно. Пейте или идите. Запирать будем не дверь.", 0, -1, None, "spoke_innkeeper", None),
         ],
         [
-            (1, "npc", "Стакан ещё тёплый. Правда — нет.", 0, 10, None, None, None),
+            (1, "npc", "Имя и долг. Самовар вас уже не держит. Идите.", 0, 10, None, None, None, "has_both"),
+            (2, "npc", "Вы назвались. Стакан от этого не трезвее — долг ещё в чашке.", 0, 10, None, None, None, "has_name"),
+            (3, "npc", "Лизавете должны. Пьяных без имени здесь не считают.", 0, 10, None, None, None, "guilt_admitted"),
+            (4, "npc", "Настасье должны выход. Пьяных без имени здесь не считают.", 0, 10, None, None, None, "nastasya_escape"),
+            (5, "npc", "Стакан ещё тёплый. Правда — нет.", 0, 10, None, None, None),
             (10, "player", "Куда идти, если не пить?", 0, 20, 1, None, None),
             (11, "player", "Налейте. Пусть будет тише.", -4, 30, 1, None, None),
             (12, "player", "Клиника зовёт обратно.", 0, 40, 1, None, None),
+            (13, "player", "Я назвался. Пустите к каналу.", 0, 50, 1, None, None, "has_name"),
+            (14, "player", "Лизавете. Этого мало для улицы?", 0, 51, 1, None, None, "guilt_admitted"),
+            (15, "player", "Настасье выход. Этого мало?", 0, 52, 1, None, None, "nastasya_escape"),
             (20, "npc", "На Сенную. Там имя дороже водки — и его ещё отдают.", 0, -1, None, None, None),
             (30, "npc", "Тише станет. Вы — нет. Пейте, пока самовар помнит вас живым.", -3, -1, None, None, None),
             (40, "npc", "Она всегда зовёт. Кто возвращается — тот уже номер.", -2, -1, None, None, None),
+            (50, "npc", "Мало. Туман пьёт два слова. Вы сказали одно.", 0, -1, None, None, None),
+            (51, "npc", "Лизавете мало без имени. Канал не принимает кредит.", 0, -1, None, None, None),
+            (52, "npc", "Настасье — дверь. Вам — имя. Иначе самовар вас забудет.", 0, -1, None, None, None),
         ],
     )
     _seed_city_dialogue(
@@ -854,20 +882,30 @@ def _apply_phase3(conn) -> None:
             (14, "player", "Свисток молчит. Его кто-то держит за горло.", -2, 51, 1, None, None, "class_mystic"),
             (15, "player", "Уберите руку. Не просите дважды.", 0, 52, 1, None, None, "class_rebel"),
             (20, "npc", "Больных не выпускают. Беглецов — тоже. Выберите, кем быть.", -2, -1, None, "spoke_watchman", None),
-            (30, "npc", "Честно. Туман любит честных — или съедает. Ступайте к нищему.", -4, -1, None, "spoke_watchman", None),
+            (30, "npc", "Лизавете — честно. Туман любит тех, кто не врёт воде. Ступайте к нищему.", -4, -1, None, "spoke_watchman", None),
             (40, "npc", "Смелости у вас больше, чем права. Не попадайтесь второй раз.", 0, -1, None, "spoke_watchman", None),
             (50, "npc", "Снег был. Потом клиника. Потом я здесь без права уйти.", -2, -1, None, "spoke_watchman", None),
             (51, "npc", "Не свищу. Кто свистит ночью — тот уже не городовой.", -3, -1, None, "spoke_watchman", None),
             (52, "npc", "Идите. Плечо ваше я запомню.", 0, -1, None, "spoke_watchman", None),
         ],
         [
-            (1, "npc", "Всё те же карманы. Всё те же пустые.", 0, 10, None, None, None),
+            (1, "npc", "Имя и долг. Свисток молчит. Проходите.", 0, 10, None, None, None, "has_both"),
+            (2, "npc", "Документ есть — имя. Долг ещё не в протоколе.", 0, 10, None, None, None, "has_name"),
+            (3, "npc", "Лизавете записаны. Фамилии нет. Беглецов без имени возвращают.", 0, 10, None, None, None, "guilt_admitted"),
+            (4, "npc", "Настасье должны выход. Фамилии нет. Беглецов без имени возвращают.", 0, 10, None, None, None, "nastasya_escape"),
+            (5, "npc", "Всё те же карманы. Всё те же пустые.", 0, 10, None, None, None),
             (10, "player", "Пропустите к каналу.", 0, 20, 1, None, None),
             (11, "player", "(признаться) Я бежал. И виноват.", -5, 30, 1, "guilt_admitted", None),
             (12, "player", "Где Сенная?", 0, 40, 1, None, None),
+            (13, "player", "Я назвался. Пропустите.", 0, 50, 1, None, None, "has_name"),
+            (14, "player", "Лизавете. Этого мало?", 0, 51, 1, None, None, "guilt_admitted"),
+            (15, "player", "Настасье выход. Пропустите.", 0, 52, 1, None, None, "nastasya_escape"),
             (20, "npc", "Канал никого не пропускает. Он принимает.", -2, -1, None, None, None),
-            (30, "npc", "Тогда к нищему. Туман слушает тех, кто не врёт свистку.", -3, -1, None, None, None),
+            (30, "npc", "Лизавете — к нищему. Туман слушает тех, кто не врёт воде.", -3, -1, None, None, None),
             (40, "npc", "На восток, в вату. Без имени не ходите — фонари врут.", 0, -1, None, None, None),
+            (50, "npc", "Мало. Свисток слушает два пункта. Вы назвали один.", 0, -1, None, None, None),
+            (51, "npc", "Лизавете мало без имени. Побег в никуда.", 0, -1, None, None, None),
+            (52, "npc", "Настасье — дверь. Вам — фамилия. Иначе номер.", 0, -1, None, None, None),
         ],
     )
     _seed_city_dialogue(
@@ -893,18 +931,21 @@ def _apply_phase3(conn) -> None:
         [
             (1, "npc", "Имя взял. Долг слышал. Мостовая ваша.", 0, 10, None, None, None, "has_both"),
             (2, "npc", "Имя есть. Стена ещё хочет, кому вы должны.", 0, 10, None, None, None, "has_name"),
-            (3, "npc", "Вы должны — и безымянны. Стена сытая.", 0, 10, None, None, None, "has_debt"),
-            (4, "npc", "Ещё раз. Имя или стена.", 0, 10, None, None, None),
+            (3, "npc", "Лизавете должны — и безымянны. Стена сытая.", 0, 10, None, None, None, "guilt_admitted"),
+            (4, "npc", "Настасье должны выход — и безымянны. Стена сытая.", 0, 10, None, None, None, "nastasya_escape"),
+            (5, "npc", "Ещё раз. Имя или стена.", 0, 10, None, None, None),
             (10, "player", "Я всё так же не помню.", -2, 20, 1, None, None),
             (11, "player", "(отдать то, что есть)", -6, 30, 1, "sennaya_name", None),
             (12, "player", "Я уже отдал.", 0, 40, 1, None, None),
             (13, "player", "Имя ваше. Долг — нет?", 0, 50, 1, None, None, "has_name"),
-            (14, "player", "Я должен. Этого мало?", 0, 51, 1, None, None, "has_debt"),
+            (14, "player", "Лизавете. Этого мало?", 0, 51, 1, None, None, "guilt_admitted"),
+            (15, "player", "Настасье выход. Этого мало?", 0, 52, 1, None, None, "nastasya_escape"),
             (20, "npc", "Тогда стойте. Стена терпеливая.", -2, -1, None, None, None),
             (30, "npc", "Теперь идите — если есть, кому должны. Мостовая впереди уже не клиника.", -4, -1, None, None, None),
             (40, "npc", "Тогда зачем пришли? Туман не любит повторных подаяний.", 0, -1, None, None, None),
             (50, "npc", "Мало. Стена слушает два слова. Вы сказали одно.", 0, -1, None, None, None),
-            (51, "npc", "Долг без имени — милостыня пустая. Назовите себя.", 0, -1, None, None, None),
+            (51, "npc", "Лизавете мало без имени. Милостыня пустая.", 0, -1, None, None, None),
+            (52, "npc", "Настасье — дверь. Стена хочет ещё ваше имя.", 0, -1, None, None, None),
         ],
     )
 
@@ -915,13 +956,14 @@ def _apply_phase4(conn) -> None:
         """INSERT INTO items
            (id, type, name, description, damage_die, healing, sanity_restore,
             sanity_damage, symbol, color, is_quest_item, use_effect, content)
-           VALUES (?, 'note', ?, ?, '', 0, 0, -3, '≈', '#c8b48c', 1, 'read_note', ?)
+           VALUES (?, 'note', ?, ?, '', 0, 0, -3, '≈', ?, 1, 'read_note', ?)
            ON CONFLICT(id) DO UPDATE SET content = excluded.content,
              name = excluded.name, description = excluded.description""",
         (
             "note_case",
             "Дело без обложки",
             "Папка, у которой отодрали картон вместе с фамилией.",
+            INKS["paper"],
             "Пациент N. Пробуждение без имени. Рекомендация: не выпускать "
             "на Сенную, пока не подпишет себя сам.",
         ),
@@ -961,22 +1003,25 @@ def _apply_phase4(conn) -> None:
         [
             (1, "npc", "Карточка полная. И долг на полях. Идите.", 0, 10, None, None, None, "has_both"),
             (2, "npc", "Имя в чернилах. Долг — нет. Туман читает оба листа.", 0, 10, None, None, None, "has_name"),
-            (3, "npc", "Вина есть. Подписи нет. Номер не выпускают.", 0, 10, None, None, None, "has_debt"),
-            (4, "npc", "Карточка открыта. Чернила не высохли.", 0, 10, None, None, None),
+            (3, "npc", "Лизавете на полях. Подписи нет. Номер не выпускают.", 0, 10, None, None, None, "guilt_admitted"),
+            (4, "npc", "Настасье должны выход. Подписи нет. Номер не выпускают.", 0, 10, None, None, None, "nastasya_escape"),
+            (5, "npc", "Карточка открыта. Чернила не высохли.", 0, 10, None, None, None),
             (10, "player", "Где кабинет Шпилькина?", 0, 20, 1, None, None),
             (11, "player", "(подписать себя)", -5, 30, 1, "archive_name", None),
             (12, "player", "Закройте дело.", 0, 40, 1, None, None),
             (13, "player", "Я уже в карточке. Пустите.", 0, 50, 1, None, None, "has_name"),
-            (14, "player", "Я должен. Этого хватит?", 0, 51, 1, None, None, "has_debt"),
+            (14, "player", "Лизавете. Этого хватит?", 0, 51, 1, None, None, "guilt_admitted"),
             (15, "player", "Дата на бюро — моя рука.", 0, 52, 1, None, None, "seeker_trace"),
+            (16, "player", "Настасье выход. Этого хватит?", 0, 53, 1, None, None, "nastasya_escape"),
             (20, "npc", "За запертой дверью. Ключ у него. Под ковром — то, чего нет в картотеке.",
              0, -1, None, None, None),
             (30, "npc", "Есть. Туман это любит больше лиц — если рядом долг.", -4, -1, None, None, None),
             (40, "npc", "Дело без имени не закрывается. Оно ждёт, пока вы совпадёте с бумагой.",
              -2, -1, None, None, None),
             (50, "npc", "Подпись есть. Долг — на другом листе. Туман читает оба.", 0, -1, None, None, None),
-            (51, "npc", "Вина без подписи — номер. Назовите себя.", -2, -1, None, None, None),
+            (51, "npc", "Лизавете без подписи — номер. Назовите себя.", -2, -1, None, None, None),
             (52, "npc", "Видела дату. Это не имя, но след. Клара не врёт картотеке.", 0, -1, None, None, None),
+            (53, "npc", "Настасье — дверь. Карточке — фамилия. Иначе номер.", -2, -1, None, None, None),
         ],
     )
 
@@ -1015,13 +1060,23 @@ def _apply_phase5(conn) -> None:
              -2, -1, None, "spoke_possessed", None),
         ],
         [
-            (1, "npc", "Он ближе. Говорите тише.", 0, 10, None, None, None),
+            (1, "npc", "Имя и долг. Он сыт. Говорите тише — или не говорите.", 0, 10, None, None, None, "has_both"),
+            (2, "npc", "Вы назвались. Долг ещё в зубах. Он не отпускает.", 0, 10, None, None, None, "has_name"),
+            (3, "npc", "Лизавете должны. Безымянных он надевает как халат.", 0, 10, None, None, None, "guilt_admitted"),
+            (4, "npc", "Настасье — дверь. Он держит имя. Безымянных надевает.", 0, 10, None, None, None, "nastasya_escape"),
+            (5, "npc", "Он ближе. Говорите тише.", 0, 10, None, None, None),
             (10, "player", "Как вас звали?", 0, 20, 1, None, None),
             (11, "player", "Я уйду.", 0, 30, 1, None, None),
             (12, "player", "Держитесь.", -2, 40, 1, None, None),
+            (13, "player", "Я назвался. Отпусти.", 0, 50, 1, None, None, "has_name"),
+            (14, "player", "Лизавете. Этого мало?", 0, 51, 1, None, None, "guilt_admitted"),
+            (15, "player", "Настасье выход. Отпусти.", 0, 52, 1, None, None, "nastasya_escape"),
             (20, "npc", "Как вас. Почти. Не произносите.", -3, -1, None, None, None),
             (30, "npc", "Идите. Шаг на клетку — уже не разговор.", 0, -1, None, None, None),
             (40, "npc", "Держусь чужим зубом. Это не милость.", -2, -1, None, None, None),
+            (50, "npc", "Мало. Он слушает два слова. Вы сказали одно.", -3, -1, None, None, None),
+            (51, "npc", "Лизавете мало без имени. Халат без подписи.", -4, -1, None, None, None),
+            (52, "npc", "Настасье — дверь. Ему — ваше имя. Иначе останетесь вместо меня.", -3, -1, None, None, None),
         ],
     )
 
@@ -1153,5 +1208,61 @@ def _apply_phase10(conn) -> None:
         (
             "Туман густеет. Дальше — только если есть имя и долг, не одно из двух.",
         ),
+    )
+
+
+def _apply_phase11(conn) -> None:
+    """Долг имеет лицо: Лизавете в канале, Настасье — выход."""
+    conn.execute(
+        """UPDATE quests
+           SET title = ?, description = ?
+           WHERE id = 'find_notes'""",
+        (
+            "Имя и долг",
+            "Туман слышит имя и то, кому должны: Лизавете в канале, "
+            "Настасье — выход, который просили.",
+        ),
+    )
+    conn.execute(
+        """UPDATE items SET content = ?
+           WHERE id = 'note_canal'""",
+        (
+            "Лизавете. Канал взял уменьшительное. Кто вспомнит долг по имени — "
+            "того туман ещё может пропустить.",
+        ),
+    )
+    conn.execute(
+        """UPDATE items SET content = ?
+           WHERE id = 'note_case'""",
+        (
+            "Пациент N. Пробуждение без имени. На полях чужое: Лизавета. "
+            "Не выпускать на Сенную, пока не подпишет себя и не вспомнит, кому должен.",
+        ),
+    )
+
+
+def _apply_palette(conn) -> None:
+    """Предметы садятся на 18 чернил. Лишние глифы из старой таблицы — вон."""
+    allowed = tuple(TILE_INKS.keys())
+    holes = ",".join("?" * len(allowed))
+    conn.execute(
+        f"DELETE FROM tile_colors WHERE symbol NOT IN ({holes})",
+        allowed,
+    )
+    conn.execute(
+        f"DELETE FROM tile_colors_explored WHERE symbol NOT IN ({holes})",
+        allowed,
+    )
+    conn.execute(
+        "UPDATE items SET color = ? WHERE symbol IN ('≈', '~')",
+        (INKS["paper"],),
+    )
+    conn.execute(
+        "UPDATE items SET color = ? WHERE symbol IN ('!', ')')",
+        (INKS["ochre"],),
+    )
+    conn.execute(
+        "UPDATE items SET color = ? WHERE symbol = '+'",
+        (INKS["rust"],),
     )
 

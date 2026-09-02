@@ -1,11 +1,12 @@
 """Главный игровой движок."""
 import random
-from typing import List, Optional
+import time
+from typing import List, Optional, Tuple
 
 import tcod
 from tcod import libtcodpy
 
-from engine.combat_system import perform_attack
+from engine.clinic_font import apply_sprite_mode
 from engine.constants import (
     BLOCKING_TILES,
     BRED_MAP_ID,
@@ -27,12 +28,24 @@ from engine.db_loader import DBLoader
 from engine.dialogue_engine import DialogueEngine
 from engine.entity_factory import Character, EntityFactory, Player
 from engine.fov_system import FOVSystem
-from engine.quest_system import QuestSystem, can_pass_fog, has_debt, has_name
+from engine.quest_system import QuestSystem, can_pass_fog, debt_face, has_debt, has_name
 from engine.renderer import Renderer
 from engine.sanity_system import SanSystem
 from engine.save_system import has_save, read_save, restore_map_states, write_save
 from engine.sound import play as play_sound
 from engine.trigger_system import TriggerSystem
+
+MOVE_STEP_SECONDS = 0.15
+MOVE_KEY_DIRS = {
+    tcod.event.KeySym.UP: (0, -1),
+    tcod.event.KeySym.K: (0, -1),
+    tcod.event.KeySym.DOWN: (0, 1),
+    tcod.event.KeySym.J: (0, 1),
+    tcod.event.KeySym.LEFT: (-1, 0),
+    tcod.event.KeySym.H: (-1, 0),
+    tcod.event.KeySym.RIGHT: (1, 0),
+    tcod.event.KeySym.L: (1, 0),
+}
 
 
 class GameState:
@@ -90,6 +103,40 @@ class GameEngine:
         self.showing_help = False
         self.is_inventory_open = False
         self.inventory_selected_index = 0
+        self.use_sprites = True
+        self._reset_realtime()
+
+    def _reset_realtime(self):
+        """Сброс часов кадра и зажатых стрелок."""
+        self._fov_dirty = True
+        self._held_dirs: List[Tuple[object, int, int]] = []
+        self._move_cooldown = 0.0
+        self._hold_bump_cell = None
+        self._clock = time.perf_counter()
+
+    def _clinic_tileset(self):
+        return getattr(getattr(self, "context", None), "tileset", None)
+
+    def _apply_glyph_mode(self, sprites: bool) -> bool:
+        tileset = self._clinic_tileset()
+        if tileset is None:
+            self.use_sprites = bool(sprites)
+            return True
+        if not apply_sprite_mode(tileset, sprites):
+            return False
+        self.use_sprites = bool(sprites)
+        return True
+
+    def _toggle_glyph_mode(self) -> None:
+        """F4: маски или буквы. Книга должна читаться без картинок."""
+        want = not getattr(self, "use_sprites", True)
+        if not self._apply_glyph_mode(want):
+            self.add_message("Чернильница недоступна.")
+            return
+        if self.use_sprites:
+            self.add_message("Вид: картинки.")
+        else:
+            self.add_message("Вид: буквы.")
 
     def add_message(self, text: str):
         """Добавить сообщение в лог."""
@@ -98,10 +145,16 @@ class GameEngine:
             self.messages.pop(0)
 
     def run(self):
-        """Главный цикл."""
+        """Главный цикл: кадр идёт сам, шаг — по часам."""
         running = True
+        self._clock = time.perf_counter()
         while running:
+            now = time.perf_counter()
+            dt = now - self._clock
+            self._clock = now
             running = self.handle_events()
+            if running:
+                self._tick_held_walk(dt)
             if self.san_system:
                 for event in self.san_system.update():
                     self.add_message(event)
@@ -124,6 +177,7 @@ class GameEngine:
         self.bred_seed = random.randint(1, 10**9)
         self.fired_triggers = set()
         self.current_dialogue_choices = []
+        self._reset_realtime()
 
         starting_map = self.db.get_starting_map()
         if not starting_map:
@@ -210,7 +264,9 @@ class GameEngine:
         self.current_map = []
         self.entities = []
         self.messages = []
+        self._reset_realtime()
         self.map_states = restore_map_states(self, payload)
+        self._apply_glyph_mode(bool(payload.get("use_sprites", True)))
 
         map_id = payload["map_id"]
         self._load_map(map_id)
@@ -283,6 +339,14 @@ class GameEngine:
         if explored is not None:
             self.fov_system.explored = explored
         self.renderer.fov_system = self.fov_system
+        self._fov_dirty = True
+
+    def _mark_fov_dirty(self):
+        self._fov_dirty = True
+
+    def _ensure_fov(self):
+        if getattr(self, '_fov_dirty', True):
+            self._compute_fov()
 
     def _compute_fov(self):
         if not self.fov_system or not self.player or not self.current_map:
@@ -293,6 +357,7 @@ class GameEngine:
             self.current_map,
             self.light_sources,
         )
+        self._fov_dirty = False
 
     def _place_player_on_start(self):
         map_height = len(self.current_map)
@@ -408,33 +473,24 @@ class GameEngine:
         self.player.damage_die = best
 
     def handle_events(self):
-        """Обработка ввода."""
-        for event in tcod.event.wait():
+        """Обработка ввода. Не блокирует кадр."""
+        for event in tcod.event.get():
             if isinstance(event, tcod.event.Quit):
                 return self.quit_and_save()
             if isinstance(event, tcod.event.KeyDown):
-                if self.state == GameState.CLASS_SELECTION:
-                    if not self._handle_class_selection(event):
-                        return False
-                elif self.state == GameState.PLAYING:
-                    if not self._handle_playing(event):
-                        return False
-                elif self.state == GameState.COMBAT:
-                    if not self._handle_combat(event):
-                        return False
-                elif self.state == GameState.DIALOGUE:
-                    if not self._handle_dialogue(event):
-                        return False
-                elif self.state == GameState.ENDING:
-                    if event.sym in (
-                        tcod.event.KeySym.ESCAPE,
-                        tcod.event.KeySym.RETURN,
-                        tcod.event.KeySym.SPACE,
-                    ):
-                        return False
-                elif self.state == GameState.GAME_OVER:
-                    if event.sym == tcod.event.KeySym.ESCAPE:
-                        return False
+                if event.sym in MOVE_KEY_DIRS:
+                    self._press_move_key(event.sym)
+                if (
+                    getattr(event, 'repeat', False)
+                    and event.sym in MOVE_KEY_DIRS
+                    and not self._world_is_frozen()
+                ):
+                    continue
+                if not self._dispatch_key(event):
+                    return False
+            elif isinstance(event, tcod.event.KeyUp):
+                if event.sym in MOVE_KEY_DIRS:
+                    self._release_move_key(event.sym)
 
         if (
             self.player
@@ -446,6 +502,63 @@ class GameEngine:
                 self.state = GameState.GAME_OVER
                 self.add_message("Вы погибли. Тени сомкнулись над вами...")
         return True
+
+    def _dispatch_key(self, event) -> bool:
+        if event.sym == tcod.event.KeySym.F4:
+            self._toggle_glyph_mode()
+            return True
+        if self.state == GameState.CLASS_SELECTION:
+            return self._handle_class_selection(event)
+        if self.state == GameState.PLAYING:
+            return self._handle_playing(event)
+        if self.state == GameState.COMBAT:
+            return self._handle_combat(event)
+        if self.state == GameState.DIALOGUE:
+            return self._handle_dialogue(event)
+        if self.state == GameState.ENDING:
+            if event.sym in (
+                tcod.event.KeySym.ESCAPE,
+                tcod.event.KeySym.RETURN,
+                tcod.event.KeySym.SPACE,
+            ):
+                return False
+            return True
+        if self.state == GameState.GAME_OVER:
+            if event.sym == tcod.event.KeySym.ESCAPE:
+                return False
+        return True
+
+    def _world_is_frozen(self) -> bool:
+        """Диалог, бой, инвентарь и титул останавливают коридор."""
+        if self.state != GameState.PLAYING:
+            return True
+        if self.showing_help or self.is_inventory_open:
+            return True
+        return False
+
+    def _press_move_key(self, sym):
+        self._held_dirs = [item for item in self._held_dirs if item[0] != sym]
+        dx, dy = MOVE_KEY_DIRS[sym]
+        self._held_dirs.append((sym, dx, dy))
+
+    def _release_move_key(self, sym):
+        self._held_dirs = [item for item in self._held_dirs if item[0] != sym]
+        self._hold_bump_cell = None
+        if not self._held_dirs:
+            self._move_cooldown = 0.0
+
+    def _tick_held_walk(self, dt: float):
+        """Один шаг ~150 мс, пока стрелка зажата. Модалки стопают мир."""
+        if self._world_is_frozen() or not self.player or not self._held_dirs:
+            if not self._held_dirs:
+                self._move_cooldown = 0.0
+            return
+        self._move_cooldown -= dt
+        if self._move_cooldown > 0:
+            return
+        _sym, dx, dy = self._held_dirs[-1]
+        self._try_move(dx, dy)
+        self._move_cooldown = MOVE_STEP_SECONDS
 
     def _handle_class_selection(self, event) -> bool:
         if event.sym == tcod.event.KeySym.ESCAPE:
@@ -486,14 +599,8 @@ class GameEngine:
         if event.sym in (tcod.event.KeySym.Q, tcod.event.KeySym.ESCAPE):
             return self.quit_and_save()
 
-        if event.sym in (tcod.event.KeySym.UP, tcod.event.KeySym.K):
-            self._try_move(0, -1)
-        elif event.sym in (tcod.event.KeySym.DOWN, tcod.event.KeySym.J):
-            self._try_move(0, 1)
-        elif event.sym in (tcod.event.KeySym.LEFT, tcod.event.KeySym.H):
-            self._try_move(-1, 0)
-        elif event.sym in (tcod.event.KeySym.RIGHT, tcod.event.KeySym.L):
-            self._try_move(1, 0)
+        if event.sym in MOVE_KEY_DIRS:
+            return True
         elif event.sym == tcod.event.KeySym.A:
             self._try_attack()
         elif event.sym == tcod.event.KeySym.E:
@@ -761,13 +868,21 @@ class GameEngine:
             self._apply_dialogue_view(kind, text)
         return True
 
+    def _bump_message(self, x: int, y: int, message: str):
+        cell = (x, y)
+        if getattr(self, '_hold_bump_cell', None) == cell:
+            return
+        self._hold_bump_cell = cell
+        if message:
+            self.add_message(message)
+
     def _try_move(self, dx: int, dy: int):
         """Попытка двигаться."""
         new_x = self.player.x + dx
         new_y = self.player.y + dy
 
         if not (0 <= new_y < len(self.current_map) and 0 <= new_x < len(self.current_map[0])):
-            self.add_message("Дальше нет пола — только тьма за зданием.")
+            self._bump_message(new_x, new_y, "Дальше нет пола — только тьма за зданием.")
             return
 
         tile = self.current_map[new_y][new_x]
@@ -777,9 +892,9 @@ class GameEngine:
                 return
             message = TILE_BUMP_MESSAGES.get(tile)
             if message:
-                self.add_message(message)
+                self._bump_message(new_x, new_y, message)
             else:
-                self.add_message("Не пройти.")
+                self._bump_message(new_x, new_y, "Не пройти.")
             return
 
         if tile in DOOR_TILES:
@@ -791,15 +906,16 @@ class GameEngine:
             if self._is_hostile(entity):
                 self._start_combat(entity)
             else:
-                self.add_message(f"Перед вами — {entity.name}.")
+                self._bump_message(new_x, new_y, f"Перед вами — {entity.name}.")
             return
 
         if tile not in WALKABLE_TILES:
-            self.add_message("Клетка пустая на вид — и всё же стена.")
+            self._bump_message(new_x, new_y, "Клетка пустая на вид — и всё же стена.")
             return
 
         self.player.x = new_x
         self.player.y = new_y
+        self._hold_bump_cell = None
         self._check_pickup()
 
         trigger_result = self.trigger_system.check_enter_trigger(
@@ -880,9 +996,10 @@ class GameEngine:
     def _try_open_door(self, x: int, y: int, tile: str):
         """Открыть дверь. Запертая требует свой ключ."""
         if tile == 'D':
-            self.current_map[y][x] = '.'
+            self.current_map[y][x] = "'"
             self.add_message("Вы открыли дверь.")
             play_sound("door")
+            self._mark_fov_dirty()
             return
 
         if tile in LOCKED_DOOR_TILES:
@@ -900,18 +1017,19 @@ class GameEngine:
                 key_item = item
                 break
             if key_item:
-                self.current_map[y][x] = '.'
+                self.current_map[y][x] = "'"
                 self.player.inventory.remove(key_item)
                 self.add_message(
                     f"Вы отперли дверь ключом '{key_item.name}'. Ключ сломался в замке."
                 )
                 play_sound("door")
+                self._mark_fov_dirty()
             elif required:
                 hint = LOCKED_DOOR_HINTS.get(getattr(self.player, 'id', ''))
                 if hint:
                     self.add_message(hint)
                 if getattr(self.player, 'id', '') == 'rebel':
-                    self.current_map[y][x] = '.'
+                    self.current_map[y][x] = "'"
                     self.player.change_san(-8)
                     self.player.take_damage(1)
                     self.flags.add('broke_door')
@@ -919,6 +1037,7 @@ class GameEngine:
                         "Вы выбиваете дверь плечом. Замок орёт. Рассудок — тоже."
                     )
                     play_sound("door")
+                    self._mark_fov_dirty()
                     self._maybe_spawn_double()
                     return
                 needed = self.entity_factory.create_item(required)
@@ -1031,9 +1150,15 @@ class GameEngine:
                     "Имя в вате есть. Долг ещё в коридоре. Туман не выпускает."
                 )
             elif has_debt(self.flags) and not has_name(self.flags):
-                self.add_message(
-                    "Вы должны — и безымянны. Туман не знает, кого выпускать."
-                )
+                whom = debt_face(self.flags)
+                if whom:
+                    self.add_message(
+                        f"Вы должны {whom} — и безымянны. Туман не знает, кого выпускать."
+                    )
+                else:
+                    self.add_message(
+                        "Вы должны — и безымянны. Туман не знает, кого выпускать."
+                    )
             else:
                 self.add_message(
                     "Туман густой, как вата. Без имени и долга он не выпускает."
@@ -1226,7 +1351,7 @@ class GameEngine:
         if self.current_map and self.fov_system and self.player:
             map_height = len(self.current_map)
             map_width = len(self.current_map[0]) if map_height else 0
-            self._compute_fov()
+            self._ensure_fov()
             self.renderer.set_camera_position(
                 self.player.x, self.player.y, map_width, map_height
             )

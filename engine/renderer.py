@@ -1,23 +1,31 @@
 """Отрисовка игры через tcod."""
-import tcod
-import random
-from tcod import libtcodpy
-from engine.constants import LEGEND_WIDTH, SCREEN_HEIGHT, SCREEN_WIDTH, TILE_LEGEND
-from typing import List, Dict
 import math
+import random
+import time
+from typing import Dict, List
+
+import tcod
+from tcod import libtcodpy
+
+from engine.constants import LEGEND_WIDTH, SCREEN_HEIGHT, SCREEN_WIDTH, TILE_LEGEND
+from engine.palette import INKS, explored_color_dicts, hex_to_rgb, visible_color_dicts
 
 
-# Цветовая палитра
-COLOR_WALL = libtcodpy.Color(45, 50, 55)
-COLOR_FLOOR = libtcodpy.Color(25, 30, 35)
-COLOR_PLAYER = libtcodpy.Color(220, 220, 230)
-COLOR_TEXT = libtcodpy.Color(150, 160, 170)
-COLOR_SANITY = libtcodpy.Color(180, 50, 50)
-COLOR_HP = libtcodpy.Color(200, 80, 80)
-COLOR_DIALOGUE = libtcodpy.Color(220, 200, 150)
-COLOR_UNKNOWN = libtcodpy.Color(0, 0, 0)  # Неизвестная область
-COLOR_VOID_FG = libtcodpy.Color(42, 44, 50)
-COLOR_VOID_BG = libtcodpy.Color(10, 11, 14)
+def _ink(name: str):
+    return libtcodpy.Color(*hex_to_rgb(INKS[name]))
+
+
+COLOR_WALL = _ink("graphite")
+COLOR_FLOOR = _ink("soot")
+COLOR_PLAYER = _ink("linen")
+COLOR_TEXT = _ink("ash")
+COLOR_SANITY = _ink("blood")
+COLOR_HP = _ink("rust")
+COLOR_DIALOGUE = _ink("paper")
+COLOR_UNKNOWN = libtcodpy.Color(0, 0, 0)
+COLOR_VOID_FG = _ink("graphite")
+COLOR_VOID_BG = _ink("void")
+_BLOOD_RGB = hex_to_rgb(INKS["blood"])
 # Глифы вне ASCII, которые шрифт tcod всё же рисует.
 _ALLOWED_UNICODE_GLYPHS = frozenset('≈±§¶')
 
@@ -93,55 +101,9 @@ class Renderer:
             self._set_default_tile_colors()
     
     def _set_default_tile_colors(self):
-        """Установить цвета по умолчанию."""
-        self.tile_colors = {
-            '#': {'fg': '#2d3237', 'bg': '#2d3237'},
-            '.': {'fg': '#191e23', 'bg': '#191e23'},
-            ' ': {'fg': '#191e23', 'bg': '#191e23'},
-            'D': {'fg': '#dc8c40', 'bg': '#8c6432'},
-            'd': {'fg': '#ff5050', 'bg': '#a03232'},
-            'S': {'fg': '#64dcff', 'bg': '#3c8ca0'},
-            's': {'fg': '#5088a0', 'bg': '#2c5a68'},
-            'E': {'fg': '#64dcff', 'bg': '#3c8ca0'},
-            '*': {'fg': '#fff064', 'bg': '#b4a032'},
-            '!': {'fg': '#78ff78', 'bg': '#3ca03c'},
-            ')': {'fg': '#78ff78', 'bg': '#3ca03c'},
-            '≈': {'fg': '#ffdc64', 'bg': '#a08c32'},
-            '~': {'fg': '#ffdc64', 'bg': '#a08c32'},
-            '&': {'fg': '#ff7878', 'bg': '#a03c3c'},
-            '@': {'fg': '#dcdce6', 'bg': '#646478'},
-            'W': {'fg': '#aaccff', 'bg': '#6688aa'},
-            'B': {'fg': '#6a5a4a', 'bg': '#3a322c'},
-            'T': {'fg': '#8a6a40', 'bg': '#4a3828'},
-            'C': {'fg': '#7a6048', 'bg': '#3a3028'},
-            'H': {'fg': '#5a5048', 'bg': '#322c28'},
-            'O': {'fg': '#6a5840', 'bg': '#3a3228'},
-            '=': {'fg': '#1a3048', 'bg': '#0c1828'},
-        }
-        self.tile_colors_explored = {
-            '#': {'fg': '#1e2023', 'bg': '#1e2023'},
-            '.': {'fg': '#0f1214', 'bg': '#0f1214'},
-            ' ': {'fg': '#0f1214', 'bg': '#0f1214'},
-            'D': {'fg': '#6e5028', 'bg': '#463219'},
-            'd': {'fg': '#822828', 'bg': '#501919'},
-            'S': {'fg': '#326e82', 'bg': '#1e4650'},
-            's': {'fg': '#284858', 'bg': '#142830'},
-            'E': {'fg': '#326e82', 'bg': '#1e4650'},
-            '*': {'fg': '#827832', 'bg': '#5a5019'},
-            '!': {'fg': '#3c823c', 'bg': '#1e501e'},
-            ')': {'fg': '#3c823c', 'bg': '#1e501e'},
-            '≈': {'fg': '#826e32', 'bg': '#504619'},
-            '~': {'fg': '#826e32', 'bg': '#504619'},
-            '&': {'fg': '#823c3c', 'bg': '#501e1e'},
-            '@': {'fg': '#646478', 'bg': '#32323c'},
-            'W': {'fg': '#445566', 'bg': '#223344'},
-            'B': {'fg': '#3a322c', 'bg': '#1e1a16'},
-            'T': {'fg': '#4a3828', 'bg': '#241c14'},
-            'C': {'fg': '#3a3028', 'bg': '#1e1814'},
-            'H': {'fg': '#322c28', 'bg': '#1a1614'},
-            'O': {'fg': '#3a3228', 'bg': '#1e1a14'},
-            '=': {'fg': '#0c1828', 'bg': '#060c14'},
-        }
+        """Фолбэк, если таблица цветов не загрузилась — те же 18 чернил."""
+        self.tile_colors = visible_color_dicts()
+        self.tile_colors_explored = explored_color_dicts()
     
     def _parse_hex_color(self, hex_str: str) -> libtcodpy.Color:
         """Преобразовать hex-строку '#RRGGBB' в Color."""
@@ -171,8 +133,44 @@ class Renderer:
             return fg, bg
         
         # Фолбэк: если символа нет в таблице
-        return libtcodpy.Color(100, 100, 100), libtcodpy.Color(50, 50, 50)    
-    
+        return libtcodpy.Color(100, 100, 100), libtcodpy.Color(50, 50, 50)
+
+    def _shade_color(self, color, shade: float):
+        shade = max(0.0, min(1.0, shade))
+        return libtcodpy.Color(
+            int(color.r * shade),
+            int(color.g * shade),
+            int(color.b * shade),
+        )
+
+    def _mix_color(self, color, other, amount: float):
+        t = max(0.0, min(1.0, amount))
+        return libtcodpy.Color(
+            int(color.r * (1.0 - t) + other.r * t),
+            int(color.g * (1.0 - t) + other.g * t),
+            int(color.b * (1.0 - t) + other.b * t),
+        )
+
+    def _flame_flicker_at(self, x: int, y: int, now: float) -> float:
+        """Тот же синус, что у глифа лампы: 0.72–1.0, в такт источнику."""
+        flames = getattr(self.fov_system, 'flames', None) or ()
+        total = 0.0
+        mixed = 0.0
+        for sx, sy, radius, intensity in flames:
+            if radius <= 0:
+                continue
+            dist = math.hypot(x - sx, y - sy)
+            if dist > radius:
+                continue
+            weight = intensity * (1.0 - dist / radius)
+            if weight <= 0:
+                continue
+            wave = 0.5 + 0.5 * math.sin(now * 3.6 + sx * 0.4)
+            mixed += weight * (0.72 + 0.28 * wave)
+            total += weight
+        if total <= 0:
+            return 1.0
+        return mixed / total    
     def clear(self):
         self.console.clear()
     
@@ -191,6 +189,8 @@ class Renderer:
                 self.console.print(
                     sx, sy, ':', fg=COLOR_VOID_FG, bg=COLOR_VOID_BG
                 )
+
+        now = time.perf_counter()
 
         for y in range(map_height):
             for x in range(map_width):
@@ -212,20 +212,26 @@ class Renderer:
                 fg, bg = self._get_tile_color(char, is_visible, is_explored)
 
                 if is_visible and self.fov_system:
-                    illumination = self.fov_system.get_illumination(x, y)
-
-                    if illumination > 0.01:
-                        boost = min(100, illumination * 100)
-                        fg = libtcodpy.Color(
-                            min(255, fg.r + int(boost)),
-                            min(255, fg.g + int(boost)),
-                            min(255, fg.b + int(boost))
-                        )
-                        bg = libtcodpy.Color(
-                            min(255, bg.r + int(boost)),
-                            min(255, bg.g + int(boost)),
-                            min(255, bg.b + int(boost))
-                        )
+                    light = self.fov_system.get_illumination(x, y)
+                    flame = self.fov_system.get_flame_illumination(x, y)
+                    moon = self.fov_system.get_window_illumination(x, y)
+                    shade = 0.22 + 0.78 * min(1.0, light / 1.15)
+                    if flame > 0.02:
+                        share = min(1.0, flame / max(light, 0.02))
+                        flicker = self._flame_flicker_at(x, y, now)
+                        shade *= 1.0 - share * (1.0 - flicker)
+                    fg = self._shade_color(fg, shade)
+                    bg = self._shade_color(bg, shade)
+                    if moon > 0.02:
+                        frost_share = min(1.0, moon / max(light, 0.02))
+                        if flame > 0.02:
+                            frost_share *= max(
+                                0.0,
+                                1.0 - min(1.0, flame / max(light, 0.02)),
+                            )
+                        if frost_share > 0.03:
+                            fg = self._mix_color(fg, _ink("frost"), 0.55 * frost_share)
+                            bg = self._mix_color(bg, _ink("ice"), 0.40 * frost_share)
 
                 self.console.print(screen_x, screen_y, char, fg=fg, bg=bg)
 
@@ -249,9 +255,9 @@ class Renderer:
     def _paint_rim_bg(self, sx: int, sy: int, heat: float) -> None:
         r, g, b = self._cell_rgb(sx, sy)
         self.console.bg[sx, sy] = (
-            min(255, int(r * (1 - heat) + 150 * heat)),
-            min(255, int(g * (1 - heat) + 28 * heat)),
-            min(255, int(b * (1 - heat) + 24 * heat)),
+            min(255, int(r * (1 - heat) + _BLOOD_RGB[0] * heat)),
+            min(255, int(g * (1 - heat) + _BLOOD_RGB[1] * heat)),
+            min(255, int(b * (1 - heat) + _BLOOD_RGB[2] * heat)),
         )
 
     def _collect_vision_rim(self, tiles, map_width: int, map_height: int) -> list:
@@ -711,7 +717,8 @@ class Renderer:
             self.console.print(x0 + 4, y, label, fg=COLOR_TEXT)
             y += 1
 
-        self.console.print(x0 + 2, self.map_height - 2, '? справка', fg=muted)
+        mode = 'буквы' if getattr(self.game_engine, 'use_sprites', True) else 'тайлы'
+        self.console.print(x0 + 2, self.map_height - 2, f'? · F4 {mode}', fg=muted)
 
     def draw_help(self):
         """Окно помощи с расшифровкой условных обозначений."""
@@ -732,6 +739,7 @@ class Renderer:
             'a — атака | e — взаимодействие',
             'r — читать записку | i — инвентарь',
             'F5 — записать ночь | F9 — вернуться',
+            'F4 — буквы / картинки',
             '? / F1 — это окно помощи',
             'q / Esc — выход: ночь запишется',
         ]

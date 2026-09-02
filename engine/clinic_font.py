@@ -2,7 +2,8 @@
 
 libtcod кладёт TTF в почти квадратную клетку, а моноширинный глиф
 занимает ~40% её ширины — отсюда «л е г е н д а». Здесь тайл режется
-по реальному шагу буквы, затем масштабируется в узкую клетку.
+по реальному шагу буквы, затем кладётся в клетку 16×24. На глифы
+легенды лежат спрайты-маски; их красят чернила палитры.
 """
 from pathlib import Path
 from typing import Optional
@@ -10,10 +11,16 @@ from typing import Optional
 import numpy as np
 import tcod.tileset
 
+from engine.clinic_tiles import (
+    TILE_HEIGHT,
+    TILE_WIDTH,
+    sprite_chars,
+    stamp_proto_tiles,
+)
+
 ROOT = Path(__file__).resolve().parents[1]
 BUNDLED_FONT = ROOT / "assets" / "fonts" / "DejaVuSansMono.ttf"
-TILE_HEIGHT = 18
-SOURCE_HEIGHT = 48
+SOURCE_HEIGHT = 64
 
 # Windows-запас, если бандл отсутствует. Не копируем эти файлы в репозиторий.
 _WINDOWS_FALLBACKS = (
@@ -167,23 +174,51 @@ def _paint_box_drawing(tileset) -> None:
         tileset[code] = tiles[kind]
 
 
-def _pack_tight_tileset(source):
+def snapshot_font_glyphs(tileset) -> dict:
+    """Буквы легенды до масок. Копия, чтобы F4 мог вернуть чернильницу."""
+    glyphs = {}
+    for char in sprite_chars():
+        tile = tileset.get_tile(ord(char))
+        if tile is None or tile.size == 0:
+            continue
+        glyphs[char] = np.ascontiguousarray(tile.copy())
+    return glyphs
+
+
+def apply_sprite_mode(tileset, sprites: bool, font_glyphs=None) -> bool:
+    """True — маски прототипа. False — глифы DejaVu. Клетка та же."""
+    if tileset is None:
+        return False
+    backup = font_glyphs if font_glyphs is not None else getattr(
+        tileset, "_clinic_font_glyphs", None
+    )
+    if not backup:
+        return False
+    if sprites:
+        stamp_proto_tiles(tileset)
+    else:
+        for char, tile in backup.items():
+            tileset[ord(char)] = np.ascontiguousarray(tile)
+    tileset._clinic_sprites = bool(sprites)
+    return True
+
+
+def _pack_tight_tileset(source, sprites: bool = True):
     x0, x1 = _advance_crop(source)
-    crop_w = max(1, x1 - x0)
-    dest_h = TILE_HEIGHT
-    dest_w = max(8, round(crop_w * dest_h / source.tile_height))
-    packed = tcod.tileset.Tileset(dest_w, dest_h)
+    packed = tcod.tileset.Tileset(TILE_WIDTH, TILE_HEIGHT)
     for code in _codepoints_to_pack():
         cropped = source.get_tile(code)[:, x0:x1]
-        packed[code] = _resize_rgba(cropped, dest_h, dest_w)
+        packed[code] = _resize_rgba(cropped, TILE_HEIGHT, TILE_WIDTH)
     _paint_box_drawing(packed)
+    packed._clinic_font_glyphs = snapshot_font_glyphs(packed)
+    apply_sprite_mode(packed, sprites, packed._clinic_font_glyphs)
     return packed
 
 
-def load_clinic_tileset(path: Optional[Path] = None):
+def load_clinic_tileset(path: Optional[Path] = None, sprites: bool = True):
     """TrueType, обрезанный по шагу буквы. None — пусть tcod возьмёт свой."""
     font_path = path or find_font_path()
     if font_path is None:
         return None
     source = tcod.tileset.load_truetype_font(str(font_path), 0, SOURCE_HEIGHT)
-    return _pack_tight_tileset(source)
+    return _pack_tight_tileset(source, sprites=sprites)

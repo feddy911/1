@@ -16,6 +16,21 @@ def has_debt(flags: Optional[Set[str]] = None) -> bool:
     return bool(set(flags or ()) & DEBT_FLAGS)
 
 
+def debt_face(flags: Optional[Set[str]] = None) -> str:
+    """Кому должны: Лизавете в канале, Настасье — выход."""
+    flags = set(flags or ())
+    names = []
+    if "guilt_admitted" in flags:
+        names.append("Лизавете")
+    if "nastasya_escape" in flags:
+        names.append("Настасье")
+    if not names:
+        return ""
+    if len(names) == 1:
+        return names[0]
+    return " и ".join(names)
+
+
 def can_pass_fog(flags: Optional[Set[str]] = None) -> bool:
     return has_name(flags) and has_debt(flags)
 
@@ -99,12 +114,15 @@ class QuestSystem:
         flags = flags or set()
         named = has_name(flags)
         owed = has_debt(flags)
+        face = debt_face(flags)
         if named and owed:
-            return ["Имя и долг сказаны. Туман на востоке улицы уже слышал."]
+            whom = f" ({face})" if face else ""
+            return [f"Имя и долг{whom} сказаны. Туман на востоке улицы уже слышал."]
         if named:
             return ["Имя есть. Долг ещё в коридоре. Туман на востоке ждёт оба."]
         if owed:
-            return ["Долг сказан. Имени туман не слышал."]
+            whom = face or "долг"
+            return [f"Долг — {whom}. Имени туман не слышал."]
         return ["Вспомнить имя. И долг. Без обоих улица — стена."]
 
     def is_all_completed(self) -> bool:

@@ -231,6 +231,7 @@ def main():
     engine.inventory_selected_index = 0
     engine.current_enemy = None
     engine.state = "playing"
+    engine._reset_realtime()
 
     engine._load_map("hospital_floor_1", spawn_player=True)
     first_count = len(engine.entities)
@@ -514,13 +515,18 @@ def main():
     hud_debt = " ".join(qs.get_active_quest_descriptions({"guilt_admitted"}))
     if "имен" not in hud_debt.lower():
         errors.append(f"HUD после долга без имени: {hud_debt}")
+    if "лизавет" not in hud_debt.lower():
+        errors.append(f"HUD долга без лица Лизаветы: {hud_debt}")
+    hud_nas = " ".join(qs.get_active_quest_descriptions({"nastasya_escape"}))
+    if "настась" not in hud_nas.lower():
+        errors.append(f"HUD долга без лица Настасьи: {hud_nas}")
     hud_ok = " ".join(
         qs.get_active_quest_descriptions({"archive_name", "guilt_admitted"})
     )
     if "уже слышал" not in hud_ok:
         errors.append(f"HUD с обеими правдами: {hud_ok}")
 
-    from engine.quest_system import can_pass_fog, has_debt, has_name
+    from engine.quest_system import can_pass_fog, debt_face, has_debt, has_name
 
     if can_pass_fog({"archive_name"}) or can_pass_fog({"guilt_admitted"}):
         errors.append("один флаг правды открывает туман")
@@ -528,6 +534,52 @@ def main():
         errors.append("имя и долг вместе не открывают туман")
     if not has_name({"sennaya_name"}) or not has_debt({"nastasya_escape"}):
         errors.append("флаги имени и долга перепутаны")
+    if debt_face({"guilt_admitted"}) != "Лизавете":
+        errors.append(f"лицо долга вины: {debt_face({'guilt_admitted'})}")
+    if "Настасье" not in debt_face({"nastasya_escape", "guilt_admitted"}):
+        errors.append("два лица долга не сходятся")
+
+    canal = db.get_note("note_canal") or db.get_item("note_canal") or {}
+    canal_text = (canal.get("content") or "").lower()
+    if "лизавет" not in canal_text:
+        errors.append(f"записка с набережной без лица долга: {canal}")
+
+    de_liz = DialogueEngine(db)
+    if de_liz.start_dialogue("dialogue_panteleimon_intro", flags=set(), san=70):
+        de_liz.present()
+        de_liz.advance()
+        kind_p, text_p = de_liz.choose(2)
+        fin_p = de_liz.finish()
+        if "guilt_admitted" not in (fin_p.get("flags") or []):
+            errors.append(f"Пантелеймон не ставит вину: {fin_p}")
+        if "лизавет" not in (text_p or "").lower():
+            errors.append(f"Пантелеймон не называет Лизавету: {kind_p} {text_p}")
+    else:
+        errors.append("не стартует Пантелеймон для лица долга")
+
+    de_face = DialogueEngine(db)
+    if de_face.start_dialogue("dialogue_shpilkin_repeat", flags={"guilt_admitted"}, san=70):
+        kind_f, text_f = de_face.present()
+        if kind_f != "text" or "лизавет" not in (text_f or "").lower():
+            errors.append(f"Шпилькин не называет Лизавету: {kind_f} {text_f}")
+        de_face.advance()
+        if not any("лизавет" in c.lower() for c in de_face.get_choices()):
+            errors.append(f"нет реплики про Лизавету: {de_face.get_choices()}")
+    else:
+        errors.append("не стартует повтор Шпилькина с виной")
+
+    de_nface = DialogueEngine(db)
+    if de_nface.start_dialogue(
+        "dialogue_nastasya_repeat", flags={"nastasya_escape"}, san=70
+    ):
+        kind_n, text_n = de_nface.present()
+        if kind_n != "text" or "настась" not in (text_n or "").lower() and "мне" not in (text_n or "").lower():
+            errors.append(f"Настасья не слышит свой долг: {kind_n} {text_n}")
+        de_nface.advance()
+        if not any("выход" in c.lower() for c in de_nface.get_choices()):
+            errors.append(f"нет реплики про выход Настасье: {de_nface.get_choices()}")
+    else:
+        errors.append("не стартует повтор Настасьи с долгом выхода")
 
     de_h = DialogueEngine(db)
     if de_h.start_dialogue("dialogue_shpilkin_repeat", flags={"archive_name"}, san=70):
@@ -542,6 +594,51 @@ def main():
             errors.append(f"нет вопроса про имя: {de_h.get_choices()}")
     else:
         errors.append("не стартует повтор Шпилькина с именем")
+
+    for rid in (
+        "dialogue_innkeeper_repeat",
+        "dialogue_watchman_repeat",
+        "dialogue_double_repeat",
+        "dialogue_panteleimon_repeat",
+        "dialogue_possessed_repeat",
+    ):
+        de_c = DialogueEngine(db)
+        if de_c.start_dialogue(rid, flags={"archive_name"}, san=70):
+            kind_c, text_c = de_c.present()
+            if kind_c != "text" or "долг" not in (text_c or "").lower():
+                errors.append(f"{rid} не слышит имя: {kind_c} {text_c}")
+            de_c.advance()
+            if len(de_c.get_choices()) < 4:
+                errors.append(f"{rid} после имени без 4-й реплики: {de_c.get_choices()}")
+        else:
+            errors.append(f"не стартует {rid} с именем")
+
+    de_pante_g = DialogueEngine(db)
+    if de_pante_g.start_dialogue(
+        "dialogue_panteleimon_repeat", flags={"guilt_admitted"}, san=70
+    ):
+        kind_g, text_g = de_pante_g.present()
+        if kind_g != "text" or "лизавет" not in (text_g or "").lower():
+            errors.append(f"Пантелеймон не слышит Лизавету: {kind_g} {text_g}")
+        de_pante_g.advance()
+        if not any("лизавет" in c.lower() for c in de_pante_g.get_choices()):
+            errors.append(f"нет реплики Пантелеймона про Лизавету: {de_pante_g.get_choices()}")
+    else:
+        errors.append("не стартует повтор Пантелеймона с виной")
+
+    de_poss_n = DialogueEngine(db)
+    if de_poss_n.start_dialogue(
+        "dialogue_possessed_repeat", flags={"nastasya_escape"}, san=70
+    ):
+        kind_q, text_q = de_poss_n.present()
+        if kind_q != "text" or "настась" not in (text_q or "").lower():
+            errors.append(f"одержимый не слышит Настасью: {kind_q} {text_q}")
+        de_poss_n.advance()
+        n_q = len(de_poss_n.get_choices())
+        if n_q < 4 or not any("настась" in c.lower() for c in de_poss_n.get_choices()):
+            errors.append(f"одержимый без реплики про Настасью: {de_poss_n.get_choices()}")
+    else:
+        errors.append("не стартует повтор одержимого с долгом выхода")
 
     map_grids = {
         "hospital_floor_1": floor,
@@ -726,6 +823,139 @@ def main():
         errors.append("мистик не оставляет след у лампы")
     engine.player.id = old_pid
 
+    colors = db.get_tile_colors()
+    if "'" not in colors:
+        errors.append("нет цвета открытой двери")
+    wall_bg = colors.get("#", {}).get("bg", "")
+    floor_bg = colors.get(".", {}).get("bg", "")
+    door_fg = colors.get("D", {}).get("fg", "")
+    if wall_bg and floor_bg and wall_bg.lower() == floor_bg.lower():
+        errors.append("стена и пол одного цвета")
+    if door_fg.lower() in (wall_bg.lower(), floor_bg.lower()):
+        errors.append("дверь сливается со стеной")
+
+    from engine.palette import INKS, TILE_INKS, is_viridian
+
+    if not (12 <= len(INKS) <= 18):
+        errors.append(f"палитра не 12–18 чернил: {len(INKS)}")
+    allowed = {h.lower() for h in INKS.values()}
+    for name, hex_color in INKS.items():
+        if is_viridian(hex_color):
+            errors.append(f"виридиан в чернилах {name}: {hex_color}")
+    extra = set(colors) - set(TILE_INKS)
+    if extra:
+        errors.append(f"лишние глифы в tile_colors: {sorted(extra)}")
+    for symbol, spec in colors.items():
+        if symbol not in TILE_INKS:
+            continue
+        for slot in ("fg", "bg"):
+            hx = (spec.get(slot) or "").lower()
+            if hx and hx not in allowed:
+                errors.append(f"тайл {symbol} {slot} {hx} вне палитры")
+    pickup = colors.get("!", {})
+    if pickup and is_viridian(pickup.get("fg") or ""):
+        errors.append(f"предмет всё ещё зелёный: {pickup}")
+    lamp_fg = (colors.get("*", {}).get("fg") or "").lower()
+    if lamp_fg and lamp_fg == (floor_bg or "").lower():
+        errors.append("лампа сливается с полом")
+    if "lamp" not in TILE_INKS["*"] or "frost" not in TILE_INKS["W"]:
+        errors.append("лампа или окно не на своих чернилах")
+
+    from engine.fov_system import FOVSystem
+
+    grid = [["."] * 15 for _ in range(15)]
+    fov = FOVSystem(15, 15)
+    fov.initialize(grid)
+    fov.compute_fov(7, 7, grid, [])
+    near = fov.get_illumination(7, 7)
+    far = fov.get_illumination(7, 13)
+    if near <= far:
+        errors.append(f"нет градиента зрения: у @ {near:.2f}, вдали {far:.2f}")
+
+    fov_w = FOVSystem(15, 15)
+    fov_w.initialize(grid)
+    fov_w.compute_fov(
+        7,
+        7,
+        grid,
+        [{"x": 2, "y": 7, "radius": 5, "intensity": 0.7, "symbol": "W"}],
+    )
+    pane = fov_w.get_window_illumination(2, 7)
+    pool = fov_w.get_window_illumination(4, 7)
+    if pane <= pool:
+        errors.append(f"лунный свет без градиента: у стекла {pane:.2f}, вдали {pool:.2f}")
+    if fov_w.get_flame_illumination(2, 7) > 0.01:
+        errors.append("окно мерцает как лампа")
+
+    engine._load_map("hospital_floor_1")
+    engine.current_map[12][48] = "D"
+    engine._try_open_door(48, 12, "D")
+    if engine.current_map[12][48] != "'":
+        errors.append(f"открытая дверь стала {engine.current_map[12][48]!r}, не порог")
+
+    from engine.game_engine import GameState as _LiveState, MOVE_STEP_SECONDS
+
+    ge_src = (ROOT / "engine" / "game_engine.py").read_text(encoding="utf-8")
+    if "tcod.event.wait()" in ge_src:
+        errors.append("цикл всё ещё ждёт клавишу")
+    if "tcod.event.get()" not in ge_src:
+        errors.append("нет живого кадра")
+    if "_tick_held_walk" not in ge_src or "_ensure_fov" not in ge_src:
+        errors.append("нет зажатой ходьбы или кэша FOV")
+    if "KeySym.F4" not in ge_src or "_toggle_glyph_mode" not in ge_src:
+        errors.append("нет переключателя буквы/картинки")
+
+    engine._load_map("hospital_floor_1")
+    engine.player.x, engine.player.y = 12, 10
+    engine.state = _LiveState.PLAYING
+    engine.showing_help = False
+    engine.is_inventory_open = False
+    engine._reset_realtime()
+    engine._compute_fov()
+    fov_calls = {"n": 0}
+    orig_fov = engine._compute_fov
+
+    def _counted_fov():
+        fov_calls["n"] += 1
+        orig_fov()
+
+    engine._compute_fov = _counted_fov
+    engine._ensure_fov()
+    if fov_calls["n"]:
+        errors.append("FOV пересчитался без шага")
+    engine._mark_fov_dirty()
+    engine._ensure_fov()
+    if fov_calls["n"] != 1:
+        errors.append("грязный FOV не пересчитался")
+    engine._compute_fov = orig_fov
+
+    engine._reset_realtime()
+    engine.player.x, engine.player.y = 12, 10
+    start_x = engine.player.x
+    engine._held_dirs = [("right", 1, 0)]
+    engine._tick_held_walk(0.0)
+    if engine.player.x != start_x + 1:
+        errors.append("зажатый шаг не сдвинул")
+    engine._tick_held_walk(0.05)
+    if engine.player.x != start_x + 1:
+        errors.append("шаг быстрее паузы на клетку")
+    engine._tick_held_walk(MOVE_STEP_SECONDS)
+    if engine.player.x != start_x + 2:
+        errors.append("второй шаг зажатой ходьбы не прошёл")
+    frozen_x = engine.player.x
+    engine.state = _LiveState.DIALOGUE
+    engine._move_cooldown = 0.0
+    engine._tick_held_walk(1.0)
+    if engine.player.x != frozen_x:
+        errors.append("диалог не стопает ходьбу")
+    engine.state = _LiveState.PLAYING
+    engine.is_inventory_open = True
+    engine._move_cooldown = 0.0
+    engine._tick_held_walk(1.0)
+    if engine.player.x != frozen_x:
+        errors.append("инвентарь не стопает ходьбу")
+    engine.is_inventory_open = False
+
     from engine.clinic_font import (
         BUNDLED_FONT,
         REQUIRED_CODEPOINTS,
@@ -760,6 +990,60 @@ def main():
                 errors.append(
                     f"клетка {tileset.tile_width}x{tileset.tile_height} не уже высоты"
                 )
+            if tileset.tile_width != 16 or tileset.tile_height != 24:
+                errors.append(
+                    f"прототип клетки не 16×24: {tileset.tile_width}x{tileset.tile_height}"
+                )
+            from engine.clinic_tiles import (
+                PROTO_CHARS,
+                paint_proto_tile,
+                sprite_chars,
+                tile_alpha_sum,
+            )
+            from engine.constants import TILE_LEGEND
+
+            legend_syms = {row[0] for row in TILE_LEGEND}
+            if set(PROTO_CHARS) != legend_syms:
+                errors.append(
+                    f"спрайты не покрывают легенду: {sorted(legend_syms - set(PROTO_CHARS))}"
+                )
+            wall_a = tile_alpha_sum(tileset.get_tile(ord("#")))
+            floor_a = tile_alpha_sum(tileset.get_tile(ord(".")))
+            if wall_a <= floor_a:
+                errors.append(f"стена не плотнее пола: {wall_a} <= {floor_a}")
+            for char in sprite_chars():
+                painted = paint_proto_tile(char)
+                live = tileset.get_tile(ord(char))
+                if tile_alpha_sum(live) != tile_alpha_sum(painted):
+                    errors.append(f"глиф {char!r} без спрайта прототипа")
+                if tile_alpha_sum(painted) == 0:
+                    errors.append(f"пустой спрайт {char!r}")
+            if tile_alpha_sum(paint_proto_tile("&")) == tile_alpha_sum(
+                paint_proto_tile("@")
+            ):
+                errors.append("человек неотличим от халата")
+            if tile_alpha_sum(paint_proto_tile("B")) <= floor_a:
+                errors.append("кровать не плотнее пола")
+            if tile_alpha_sum(paint_proto_tile("W")) <= floor_a:
+                errors.append("окно не плотнее пола")
+            from engine.clinic_font import apply_sprite_mode
+
+            glyphs = getattr(tileset, "_clinic_font_glyphs", None)
+            if not glyphs:
+                errors.append("нет снимка букв для F4")
+            else:
+                apply_sprite_mode(tileset, False, glyphs)
+                letter_hash = tile_alpha_sum(tileset.get_tile(ord("#")))
+                if letter_hash >= wall_a:
+                    errors.append(f"F4 не возвращает букву #: {letter_hash} >= {wall_a}")
+                apply_sprite_mode(tileset, True, glyphs)
+                if tile_alpha_sum(tileset.get_tile(ord("#"))) != wall_a:
+                    errors.append("F4 не возвращает маску стены")
+            ascii_ts = load_clinic_tileset(font_path, sprites=False)
+            if ascii_ts is None:
+                errors.append("тайлсет без масок не загрузился")
+            elif tile_alpha_sum(ascii_ts.get_tile(ord("#"))) >= wall_a:
+                errors.append("sprites=False всё ещё маска")
     paper = clinic_sound._wav_for("paper")
     door = clinic_sound._wav_for("door")
     if paper[:4] != b"RIFF" or door[:4] != b"RIFF":

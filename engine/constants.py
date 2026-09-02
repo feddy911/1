@@ -1,16 +1,17 @@
 """Константы игры."""
+from engine.palette import INKS, hex_to_rgb
 
 SCREEN_WIDTH = 80
 SCREEN_HEIGHT = 50
 
-COLOR_WALL = (45, 50, 55)
-COLOR_FLOOR = (25, 30, 35)
-COLOR_TEXT = (150, 160, 170)
-COLOR_HP = (200, 80, 80)
-COLOR_SAN = (180, 50, 50)
+COLOR_WALL = hex_to_rgb(INKS["graphite"])
+COLOR_FLOOR = hex_to_rgb(INKS["soot"])
+COLOR_TEXT = hex_to_rgb(INKS["ash"])
+COLOR_HP = hex_to_rgb(INKS["rust"])
+COLOR_SAN = hex_to_rgb(INKS["blood"])
 
 # Проходимые клетки (двери D/d открываются столкновением, не ходьбой).
-WALKABLE_TILES = frozenset({'.', 'S', 's', 'E', '*', '+'})
+WALKABLE_TILES = frozenset({'.', "'", 'S', 's', 'E', '*', '+'})
 
 # Непроходимые.
 BLOCKING_TILES = frozenset({'#', ' ', 'W', 'B', 'T', 'C', 'H', 'O', '='})
@@ -129,6 +130,7 @@ TILE_LEGEND = (
     ('!', 'вещь', 'Предмет'),
     ('≈', 'записка', 'Записка'),
     ('D', 'дверь', 'Дверь'),
+    ("'", 'открыта', 'Открытая дверь'),
     ('d', 'заперта', 'Запертая дверь'),
     ('S', 'вверх', 'Лестница вверх'),
     ('s', 'вниз', 'Лестница вниз'),
