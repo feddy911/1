@@ -22,7 +22,7 @@ def main():
         kwargs["width"] = tileset.tile_width * SCREEN_WIDTH
         kwargs["height"] = tileset.tile_height * SCREEN_HEIGHT
     with tcod.context.new(**kwargs) as context:
-        engine = GameEngine(context)
+        engine = GameEngine(context, tileset)
         engine.run()
 
 

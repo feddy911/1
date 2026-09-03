@@ -7,6 +7,7 @@ import tcod
 from tcod import libtcodpy
 
 from engine.clinic_font import apply_sprite_mode
+from engine.combat_system import perform_attack
 from engine.constants import (
     BLOCKING_TILES,
     BRED_MAP_ID,
@@ -61,8 +62,9 @@ class GameState:
 class GameEngine:
     """Главный движок игры."""
 
-    def __init__(self, context):
+    def __init__(self, context, tileset=None):
         self.context = context
+        self.clinic_tileset = tileset
         self.db = DBLoader()
         self.entity_factory = EntityFactory(self.db)
         self.trigger_system = TriggerSystem(self.db)
@@ -115,15 +117,13 @@ class GameEngine:
         self._clock = time.perf_counter()
 
     def _clinic_tileset(self):
-        return getattr(getattr(self, "context", None), "tileset", None)
+        """Тайлсет живёт на движке: у tcod.Context поля tileset нет."""
+        return getattr(self, "clinic_tileset", None)
 
     def _apply_glyph_mode(self, sprites: bool) -> bool:
         tileset = self._clinic_tileset()
-        if tileset is None:
-            self.use_sprites = bool(sprites)
-            return True
-        if not apply_sprite_mode(tileset, sprites):
-            return False
+        if tileset is not None:
+            apply_sprite_mode(tileset, sprites)
         self.use_sprites = bool(sprites)
         return True
 
@@ -272,11 +272,7 @@ class GameEngine:
         self._load_map(map_id)
         self.player.x = int(pdata.get("x", self.player.x))
         self.player.y = int(pdata.get("y", self.player.y))
-        if self.current_map:
-            height = len(self.current_map)
-            width = len(self.current_map[0]) if height else 0
-            if not (0 <= self.player.y < height and 0 <= self.player.x < width):
-                self._place_player_on_start()
+        self._snap_player_if_lost()
         self._compute_fov()
 
         self.san_system = SanSystem(self.player)
@@ -358,6 +354,22 @@ class GameEngine:
             self.light_sources,
         )
         self._fov_dirty = False
+
+    def _cell_walkable(self, x: int, y: int) -> bool:
+        if not self.current_map:
+            return False
+        height = len(self.current_map)
+        width = len(self.current_map[0]) if height else 0
+        if not (0 <= y < height and 0 <= x < width):
+            return False
+        return self.current_map[y][x] in WALKABLE_TILES
+
+    def _snap_player_if_lost(self):
+        if not self.player:
+            return
+        if self._cell_walkable(self.player.x, self.player.y):
+            return
+        self._place_player_on_start()
 
     def _place_player_on_start(self):
         map_height = len(self.current_map)
@@ -1285,6 +1297,7 @@ class GameEngine:
                 self.add_message("Коридор складывается обратно в план.")
                 self._load_map(target_id)
                 self.player.x, self.player.y = tx, ty
+                self._snap_player_if_lost()
                 self._compute_fov()
                 if target_map:
                     self.add_message(f"Вы переходите на: {target_map['name']}")
@@ -1311,14 +1324,11 @@ class GameEngine:
             )
             self.add_message("Ступени длятся дольше, чем здание.")
             self._load_map(BRED_MAP_ID)
-            if (
-                y < len(self.current_map)
-                and x < len(self.current_map[0])
-                and self.current_map[y][x] in WALKABLE_TILES
-            ):
+            if self._cell_walkable(x, y):
                 self.player.x, self.player.y = x, y
             else:
-                self.player.x, self.player.y = 46, 15
+                self.player.x, self.player.y = 53, 6
+            self._snap_player_if_lost()
             self._compute_fov()
             self.add_message("Это тот же коридор. И не тот.")
             return
@@ -1332,6 +1342,7 @@ class GameEngine:
         self._load_map(connection['target_map_id'])
         self.player.x = connection['target_x']
         self.player.y = connection['target_y']
+        self._snap_player_if_lost()
         self._compute_fov()
         self.add_message(f"Вы переходите на: {target_map['name']}")
 

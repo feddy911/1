@@ -8,7 +8,7 @@ from engine.constants import WALKABLE_TILES
 
 FURNITURE = "BTCHO"
 PROTECTED = set("#DdSsE@W")
-CORRIDOR_Y = range(8, 12)
+CORRIDOR_Y = range(1, 3)
 
 
 def _load(path: Path) -> List[List[str]]:
@@ -76,7 +76,7 @@ def generate_bred_floor(floor1_path: Path, seed: int) -> List[List[str]]:
             ):
                 candidate[y][x] = rng.choice(["*", "="])
 
-    start = (46, 15)
+    start = (53, 6)
     if candidate[start[1]][start[0]] not in (set(WALKABLE_TILES) | {"D"}):
         return base
     reachable = _flood(candidate, start)

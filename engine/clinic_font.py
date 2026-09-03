@@ -2,8 +2,9 @@
 
 libtcod кладёт TTF в почти квадратную клетку, а моноширинный глиф
 занимает ~40% её ширины — отсюда «л е г е н д а». Здесь тайл режется
-по реальному шагу буквы, затем кладётся в клетку 16×24. На глифы
-легенды лежат спрайты-маски; их красят чернила палитры.
+по реальному шагу буквы, затем кладётся в клетку 16×24. Маски легенды
+лежат в Private Use (U+E000), не на точке и не на латинских HP/SAN.
+Кириллица, диалог и HUD всегда шрифт. F4 переключает только карту.
 """
 from pathlib import Path
 from typing import Optional
@@ -14,7 +15,6 @@ import tcod.tileset
 from engine.clinic_tiles import (
     TILE_HEIGHT,
     TILE_WIDTH,
-    sprite_chars,
     stamp_proto_tiles,
 )
 
@@ -174,31 +174,12 @@ def _paint_box_drawing(tileset) -> None:
         tileset[code] = tiles[kind]
 
 
-def snapshot_font_glyphs(tileset) -> dict:
-    """Буквы легенды до масок. Копия, чтобы F4 мог вернуть чернильницу."""
-    glyphs = {}
-    for char in sprite_chars():
-        tile = tileset.get_tile(ord(char))
-        if tile is None or tile.size == 0:
-            continue
-        glyphs[char] = np.ascontiguousarray(tile.copy())
-    return glyphs
-
-
 def apply_sprite_mode(tileset, sprites: bool, font_glyphs=None) -> bool:
-    """True — маски прототипа. False — глифы DejaVu. Клетка та же."""
+    """Флаг F4. Маски уже в PUA, буквы DejaVu не снимаем."""
     if tileset is None:
         return False
-    backup = font_glyphs if font_glyphs is not None else getattr(
-        tileset, "_clinic_font_glyphs", None
-    )
-    if not backup:
+    if not getattr(tileset, "_clinic_sprites_ready", False):
         return False
-    if sprites:
-        stamp_proto_tiles(tileset)
-    else:
-        for char, tile in backup.items():
-            tileset[ord(char)] = np.ascontiguousarray(tile)
     tileset._clinic_sprites = bool(sprites)
     return True
 
@@ -210,8 +191,8 @@ def _pack_tight_tileset(source, sprites: bool = True):
         cropped = source.get_tile(code)[:, x0:x1]
         packed[code] = _resize_rgba(cropped, TILE_HEIGHT, TILE_WIDTH)
     _paint_box_drawing(packed)
-    packed._clinic_font_glyphs = snapshot_font_glyphs(packed)
-    apply_sprite_mode(packed, sprites, packed._clinic_font_glyphs)
+    stamp_proto_tiles(packed)
+    packed._clinic_sprites = bool(sprites)
     return packed
 
 

@@ -13,10 +13,30 @@ TILE_WIDTH = 16
 TILE_HEIGHT = 24
 PROTO_CHARS = "".join(symbol for symbol, _short, _long in TILE_LEGEND)
 SPRITE_ALIASES = {"~": "≈", ")": "!"}
+SPRITE_PUA_BASE = 0xE000
 
 
 def sprite_chars() -> str:
     return PROTO_CHARS + "".join(SPRITE_ALIASES)
+
+
+def sprite_codepoint(char: str) -> int:
+    """Маска живёт в Private Use, не на точке и не на H из HP."""
+    src = SPRITE_ALIASES.get(char, char)
+    idx = PROTO_CHARS.find(src)
+    if idx < 0:
+        return ord(char) if len(char) == 1 else SPRITE_PUA_BASE
+    return SPRITE_PUA_BASE + idx
+
+
+def map_glyph(char: str, sprites: bool = True) -> str:
+    """Карта → PUA. Диалог и HUD остаются буквами DejaVu."""
+    if not char or not sprites:
+        return char
+    src = SPRITE_ALIASES.get(char, char)
+    if PROTO_CHARS.find(src) < 0:
+        return char
+    return chr(sprite_codepoint(char))
 
 
 def _blank() -> np.ndarray:
@@ -579,11 +599,12 @@ def paint_proto_tile(char: str) -> np.ndarray:
 
 
 def stamp_proto_tiles(tileset) -> None:
-    """Положить маски в те же codepoint. Остальной шрифт не трогаем."""
+    """Маски в PUA. ASCII/кириллица не трогаем — иначе точка съест диалог."""
     if tileset.tile_width != TILE_WIDTH or tileset.tile_height != TILE_HEIGHT:
         return
     for char in sprite_chars():
-        tileset[ord(char)] = paint_proto_tile(char)
+        tileset[sprite_codepoint(char)] = paint_proto_tile(char)
+    tileset._clinic_sprites_ready = True
 
 
 def tile_alpha_sum(tile: np.ndarray) -> int:

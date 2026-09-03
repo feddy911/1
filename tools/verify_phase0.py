@@ -111,9 +111,13 @@ def main():
         "quit_and_save",
         "_present_testimony",
         "_maybe_study_desk",
+        "_handle_combat",
     ):
         if name not in methods:
             errors.append(f"нет метода {name}")
+    from engine import game_engine as ge_mod
+    if not hasattr(ge_mod, "perform_attack"):
+        errors.append("бой: perform_attack не импортирован")
     if "draw_legend" not in (
         node.name
         for node in ast.parse((ROOT / "engine" / "renderer.py").read_text(encoding="utf-8")).body
@@ -138,6 +142,14 @@ def main():
         errors.append("у бунтаря пустой стартовый инвентарь")
     if players["rebel"].attack_bonus <= players["mystic"].attack_bonus:
         errors.append("бунтарь должен бить сильнее мистика")
+    from engine.entity_factory import EntityFactory
+    shadow = EntityFactory(db).create_character("shadow_enemy")
+    if not shadow:
+        errors.append("нет тени для боя")
+    else:
+        hit, dmg, msg = ge_mod.perform_attack(players["seeker"], shadow)
+        if not isinstance(msg, str) or not msg:
+            errors.append(f"удар без сообщения: {hit} {dmg} {msg}")
 
     window = db.get_light_source("window")
     if not window or window["symbol"] != "W" or float(window["radius"]) < 1:
@@ -156,18 +168,18 @@ def main():
         if len(row) != len(floor[0]):
             errors.append("неровная ширина floor_1")
             break
-    if floor[12][8] != "d":
+    if floor[2][12] != "d":
         errors.append("запертая дверь кабинета не на месте")
-    if floor[12][48] != "D":
+    if floor[3][52] != "D":
         errors.append("дверь к лестнице должна быть открываемой")
-    if floor[9][12] != "*" or floor[9][36] != "*":
+    if floor[1][18] != "*" or floor[1][42] != "*":
         errors.append("лампы в коридоре не на месте")
-    if floor[2][3] != "@":
+    if floor[4][16] != "@":
         errors.append("игрок съехал со старта")
-    if floor[14][0] != "#" or floor[13][16] != "#":
+    if floor[1][0] != "#" or floor[3][12] != "#":
         errors.append("сломан каркас кабинета на 1 этаже")
 
-    assert_map_walkable(errors, "floor_1", floor, (3, 2), 57)
+    assert_map_walkable(errors, "floor_1", floor, (16, 4), 57)
 
     for map_id, grid in (
         ("hospital_floor_1", floor),
@@ -255,24 +267,30 @@ def main():
     groups = {line.get("choice_group") for line in dlg["lines"] if line.get("choice_group")}
     if not groups:
         errors.append("у Шпилькина нет веток выбора")
-    if db.get_door_lock("hospital_floor_1", 8, 12) != "key_warden":
+    if db.get_door_lock("hospital_floor_1", 12, 2) != "key_warden":
         errors.append("кабинет должен открываться ключом смотрителя")
-    if db.get_door_lock("hospital_basement", 20, 10) != "key_basement":
+    if db.get_door_lock("hospital_basement", 40, 3) != "key_basement":
         errors.append("лаборатория должна открываться ключом от подвала")
     if not db.get_region_at("street_outside", 8, 10):
         errors.append("у улицы нет описания крыльца")
     floor2 = load_map(ROOT / "data" / "maps" / "floor_2.txt")
-    if floor2[15][55] != "s":
+    if floor2[4][51] != "s":
         errors.append("лестница 2 этажа съехала")
-    assert_map_walkable(errors, "floor_2", floor2, (55, 15), 57)
+    if floor2[3][37] != "d":
+        errors.append("дверь кабинета главврача съехала")
+    if db.get_door_lock("hospital_floor_2", 37, 3) != "key_doctor":
+        errors.append("кабинет 2 этажа должен открываться ключом врача")
+    assert_map_walkable(errors, "floor_2", floor2, (53, 6), 57)
     basement = load_map(ROOT / "data" / "maps" / "basement.txt")
-    if basement[10][20] != "d":
+    if basement[3][40] != "d":
         errors.append("дверь лаборатории съехала")
-    if basement[10][10] not in WALKABLE_TILES:
+    if basement[6][43] not in WALKABLE_TILES:
         errors.append("документ в лаборатории на стене")
     if basement[7][3] not in WALKABLE_TILES:
         errors.append("дверь камеры в подвале снова упирается в стену")
-    assert_map_walkable(errors, "basement", basement, (55, 16), 60)
+    if basement[1][25] != "#" or basement[1][36] != "#":
+        errors.append("в подвале нет столбов")
+    assert_map_walkable(errors, "basement", basement, (53, 6), 57)
     street = load_map(ROOT / "data" / "maps" / "street.txt")
     if street[9][0] != "E" or street[17][10] != "=":
         errors.append("улица: нет выхода или канала")
@@ -287,6 +305,86 @@ def main():
     assert_map_walkable(errors, "traktir", traktir, (1, 7), 36)
     if db.get_connection_at_position("street_outside", 26, 6) is None:
         errors.append("нет связи улица → трактир")
+    link_grids = {
+        "hospital_floor_1": floor,
+        "hospital_floor_2": floor2,
+        "hospital_basement": basement,
+        "street_outside": street,
+        "street_traktir": traktir,
+    }
+    for map_id, expect_w, expect_h in (
+        ("hospital_floor_1", 57, 12),
+        ("hospital_floor_2", 57, 12),
+        ("hospital_basement", 57, 12),
+        ("street_outside", 60, 20),
+        ("street_traktir", 36, 14),
+        ("hospital_bred", 57, 12),
+    ):
+        meta = db.get_map(map_id)
+        if not meta or meta["width"] != expect_w or meta["height"] != expect_h:
+            errors.append(
+                f"карта {map_id}: размер БД {None if not meta else (meta['width'], meta['height'])}, "
+                f"ждали {expect_w}×{expect_h}"
+            )
+    for map_id, grid in link_grids.items():
+        for y, row in enumerate(grid):
+            for x, tile in enumerate(row):
+                if tile not in {"S", "s", "E"}:
+                    continue
+                conn_row = db.get_connection_for_tile(map_id, tile, x, y)
+                if not conn_row:
+                    errors.append(f"нет связи {map_id} '{tile}' ({x},{y})")
+                    continue
+                tid = conn_row["target_map_id"]
+                tx, ty = conn_row["target_x"], conn_row["target_y"]
+                target = link_grids.get(tid)
+                if target is None:
+                    errors.append(f"связь {map_id} ({x},{y}) ведёт на неизвестную {tid}")
+                    continue
+                if not (0 <= ty < len(target) and 0 <= tx < len(target[0])):
+                    errors.append(
+                        f"связь {map_id} ({x},{y}) → {tid} ({tx},{ty}) вне карты"
+                    )
+                    continue
+                if target[ty][tx] not in WALKABLE_TILES:
+                    errors.append(
+                        f"связь {map_id} ({x},{y}) → {tid} ({tx},{ty}) "
+                        f"на '{target[ty][tx]}'"
+                    )
+    old_states = engine.map_states
+    engine.map_states = {}
+    engine.visited_maps = set()
+    engine.flags.add("visited_bred")
+    hops = (
+        ("hospital_floor_1", 51, 4, "hospital_floor_2"),
+        ("hospital_floor_2", 51, 4, "hospital_floor_1"),
+        ("hospital_floor_1", 53, 4, "hospital_basement"),
+        ("hospital_basement", 51, 4, "hospital_floor_1"),
+        ("hospital_floor_1", 56, 1, "street_outside"),
+        ("street_outside", 0, 9, "hospital_floor_1"),
+    )
+    for src, sx, sy, dest in hops:
+        engine._load_map(src)
+        engine.player.x, engine.player.y = sx, sy
+        engine._try_transition(sx, sy)
+        if engine.current_map_id != dest:
+            errors.append(
+                f"лестница {src} ({sx},{sy}) привела на {engine.current_map_id}, ждали {dest}"
+            )
+            break
+        if not (
+            0 <= engine.player.y < len(engine.current_map)
+            and 0 <= engine.player.x < len(engine.current_map[0])
+            and engine.current_map[engine.player.y][engine.player.x] in WALKABLE_TILES
+        ):
+            errors.append(
+                f"лестница {src} → {dest} высадила в ({engine.player.x},{engine.player.y})"
+            )
+            break
+    engine.map_states = old_states
+    engine.visited_maps = set()
+    engine.flags.discard("visited_bred")
+    engine._load_map("hospital_floor_1", spawn_player=True)
     if not db.get_character("innkeeper_semyon"):
         errors.append("нет трактирщика")
 
@@ -356,7 +454,7 @@ def main():
     from engine.constants import BRED_MAP_ID, BRED_SAN_THRESHOLD
 
     bred = generate_bred_floor(ROOT / "data" / "maps" / "floor_1.txt", 7)
-    assert_map_walkable(errors, "bred", bred, (46, 15), 57)
+    assert_map_walkable(errors, "bred", bred, (53, 6), 57)
     engine.player.san = BRED_SAN_THRESHOLD
     engine.flags.discard("visited_bred")
     engine.bred_return = None
@@ -665,13 +763,13 @@ def main():
             errors.append(f"триггер {row['id']} на '{tile}' {mid} ({x},{y})")
     if db.get_triggers_at(15, 25, "hospital_floor_1"):
         errors.append("старый триггер 15,25 жив")
-    if not db.get_triggers_at(12, 9, "hospital_floor_1"):
+    if not db.get_triggers_at(18, 1, "hospital_floor_1"):
         errors.append("нет шёпота у лампы 1 этажа")
 
     engine.fired_triggers = set()
     san_before = engine.player.san
     r1 = engine.trigger_system.check_enter_trigger(
-        12, 9, engine.player, "hospital_floor_1", engine.fired_triggers
+        18, 1, engine.player, "hospital_floor_1", engine.fired_triggers
     )
     engine.fired_triggers.update(r1.fired_ids)
     if not r1.messages:
@@ -680,13 +778,13 @@ def main():
         errors.append("триггер не снял SAN")
     san_mid = engine.player.san
     r2 = engine.trigger_system.check_enter_trigger(
-        12, 9, engine.player, "hospital_floor_1", engine.fired_triggers
+        18, 1, engine.player, "hospital_floor_1", engine.fired_triggers
     )
     if r2.messages or r2.fired_ids or engine.player.san != san_mid:
         errors.append("триггер сработал повторно")
 
     engine._load_map("hospital_floor_1")
-    engine.player.x, engine.player.y = 12, 10
+    engine.player.x, engine.player.y = 18, 2
     engine.player.hp = 7
     engine.flags.add("archive_name")
     engine.fired_triggers = {"trigger_whisper"}
@@ -701,7 +799,7 @@ def main():
             engine.player.hp = 1
             engine.flags.discard("archive_name")
             engine.fired_triggers.clear()
-            engine.player.x, engine.player.y = 3, 2
+            engine.player.x, engine.player.y = 16, 4
             if not engine.load_game(slot):
                 errors.append("load_game не прочитал слот")
             else:
@@ -711,7 +809,7 @@ def main():
                     errors.append("после загрузки потерян флаг")
                 if "trigger_whisper" not in engine.fired_triggers:
                     errors.append("после загрузки потерян сработавший триггер")
-                if (engine.player.x, engine.player.y) != (12, 10):
+                if (engine.player.x, engine.player.y) != (18, 2):
                     errors.append(
                         f"после загрузки клетка {(engine.player.x, engine.player.y)}"
                     )
@@ -741,9 +839,9 @@ def main():
         errors.append(f"нужно 9 постскриптумов, есть {len(ENDING_POSTSCRIPTS)}")
     if ("mystic", "f2_study") not in CLASS_GLIMPSES:
         errors.append("мистик не видит кабинет 2-го этажа")
-    if not db.get_triggers_at(8, 15, "hospital_floor_2"):
+    if not db.get_triggers_at(42, 5, "hospital_floor_2"):
         errors.append("нет черновика в кабинете 2-го этажа")
-    if floor2[15][8] not in WALKABLE_TILES:
+    if floor2[5][42] not in WALKABLE_TILES:
         errors.append("черновик кабинета на непроходимой клетке")
 
     from engine.quest_system import QuestSystem as _QuestSystem
@@ -765,7 +863,7 @@ def main():
 
     engine._load_map("hospital_floor_2")
     engine.flags.discard("study_desk")
-    engine.player.x, engine.player.y = 14, 16
+    engine.player.x, engine.player.y = 33, 5
     engine.messages = []
     engine._try_move(1, 0)
     if "study_desk" not in engine.flags:
@@ -817,7 +915,7 @@ def main():
     engine.flags.discard("mystic_trace")
     engine.fired_triggers = set()
     engine._load_map("hospital_floor_1")
-    engine.player.x, engine.player.y = 12, 10
+    engine.player.x, engine.player.y = 18, 2
     engine._try_move(0, -1)
     if "mystic_trace" not in engine.flags:
         errors.append("мистик не оставляет след у лампы")
@@ -888,10 +986,10 @@ def main():
         errors.append("окно мерцает как лампа")
 
     engine._load_map("hospital_floor_1")
-    engine.current_map[12][48] = "D"
-    engine._try_open_door(48, 12, "D")
-    if engine.current_map[12][48] != "'":
-        errors.append(f"открытая дверь стала {engine.current_map[12][48]!r}, не порог")
+    engine.current_map[3][52] = "D"
+    engine._try_open_door(52, 3, "D")
+    if engine.current_map[3][52] != "'":
+        errors.append(f"открытая дверь стала {engine.current_map[3][52]!r}, не порог")
 
     from engine.game_engine import GameState as _LiveState, MOVE_STEP_SECONDS
 
@@ -906,7 +1004,7 @@ def main():
         errors.append("нет переключателя буквы/картинки")
 
     engine._load_map("hospital_floor_1")
-    engine.player.x, engine.player.y = 12, 10
+    engine.player.x, engine.player.y = 18, 2
     engine.state = _LiveState.PLAYING
     engine.showing_help = False
     engine.is_inventory_open = False
@@ -930,7 +1028,7 @@ def main():
     engine._compute_fov = orig_fov
 
     engine._reset_realtime()
-    engine.player.x, engine.player.y = 12, 10
+    engine.player.x, engine.player.y = 18, 2
     start_x = engine.player.x
     engine._held_dirs = [("right", 1, 0)]
     engine._tick_held_walk(0.0)
@@ -996,8 +1094,10 @@ def main():
                 )
             from engine.clinic_tiles import (
                 PROTO_CHARS,
+                map_glyph,
                 paint_proto_tile,
                 sprite_chars,
+                sprite_codepoint,
                 tile_alpha_sum,
             )
             from engine.constants import TILE_LEGEND
@@ -1007,13 +1107,29 @@ def main():
                 errors.append(
                     f"спрайты не покрывают легенду: {sorted(legend_syms - set(PROTO_CHARS))}"
                 )
-            wall_a = tile_alpha_sum(tileset.get_tile(ord("#")))
-            floor_a = tile_alpha_sum(tileset.get_tile(ord(".")))
+            wall_a = tile_alpha_sum(tileset.get_tile(sprite_codepoint("#")))
+            floor_a = tile_alpha_sum(tileset.get_tile(sprite_codepoint(".")))
+            letter_hash = tile_alpha_sum(tileset.get_tile(ord("#")))
+            letter_dot = tile_alpha_sum(tileset.get_tile(ord(".")))
+            letter_h = tile_alpha_sum(tileset.get_tile(ord("H")))
+            cab_a = tile_alpha_sum(tileset.get_tile(sprite_codepoint("H")))
             if wall_a <= floor_a:
                 errors.append(f"стена не плотнее пола: {wall_a} <= {floor_a}")
+            if letter_dot >= floor_a:
+                errors.append("точка в диалоге стала полом")
+            if letter_h >= cab_a:
+                errors.append("H в HP стала шкафом")
+            if letter_hash >= wall_a:
+                errors.append("буква # съедена маской")
+            if map_glyph(".", True) == ".":
+                errors.append("пол не ушёл в PUA")
+            if map_glyph(".", False) != ".":
+                errors.append("F4 не возвращает точку")
+            if map_glyph("Ж", True) != "Ж":
+                errors.append("кириллица ушла в PUA")
             for char in sprite_chars():
                 painted = paint_proto_tile(char)
-                live = tileset.get_tile(ord(char))
+                live = tileset.get_tile(sprite_codepoint(char))
                 if tile_alpha_sum(live) != tile_alpha_sum(painted):
                     errors.append(f"глиф {char!r} без спрайта прототипа")
                 if tile_alpha_sum(painted) == 0:
@@ -1028,22 +1144,38 @@ def main():
                 errors.append("окно не плотнее пола")
             from engine.clinic_font import apply_sprite_mode
 
-            glyphs = getattr(tileset, "_clinic_font_glyphs", None)
-            if not glyphs:
-                errors.append("нет снимка букв для F4")
+            if not getattr(tileset, "_clinic_sprites_ready", False):
+                errors.append("маски не легли в PUA")
             else:
-                apply_sprite_mode(tileset, False, glyphs)
-                letter_hash = tile_alpha_sum(tileset.get_tile(ord("#")))
-                if letter_hash >= wall_a:
-                    errors.append(f"F4 не возвращает букву #: {letter_hash} >= {wall_a}")
-                apply_sprite_mode(tileset, True, glyphs)
-                if tile_alpha_sum(tileset.get_tile(ord("#"))) != wall_a:
-                    errors.append("F4 не возвращает маску стены")
+                apply_sprite_mode(tileset, False)
+                if tile_alpha_sum(tileset.get_tile(ord("."))) != letter_dot:
+                    errors.append("F4 трогает точку в шрифте")
+                apply_sprite_mode(tileset, True)
+                if tile_alpha_sum(tileset.get_tile(sprite_codepoint("#"))) != wall_a:
+                    errors.append("F4 снял маску стены с PUA")
             ascii_ts = load_clinic_tileset(font_path, sprites=False)
             if ascii_ts is None:
                 errors.append("тайлсет без масок не загрузился")
             elif tile_alpha_sum(ascii_ts.get_tile(ord("#"))) >= wall_a:
-                errors.append("sprites=False всё ещё маска")
+                errors.append("sprites=False всё ещё маска на #")
+            elif tile_alpha_sum(ascii_ts.get_tile(sprite_codepoint("#"))) != wall_a:
+                errors.append("PUA пуста при sprites=False")
+            from engine.renderer import Renderer
+
+            probe = Renderer(SCREEN_WIDTH, SCREEN_HEIGHT)
+
+            class _GlyphHost:
+                use_sprites = True
+                clinic_tileset = tileset
+
+            probe.game_engine = _GlyphHost()
+            if probe._tile_glyph(".") == ".":
+                errors.append("карта печатает точку вместо маски пола")
+            if probe._tile_glyph("Ж") != "Ж":
+                errors.append("кириллица на карте ушла в PUA")
+            probe.game_engine.use_sprites = False
+            if probe._tile_glyph(".") != ".":
+                errors.append("F4 не возвращает букву на карте")
     paper = clinic_sound._wav_for("paper")
     door = clinic_sound._wav_for("door")
     if paper[:4] != b"RIFF" or door[:4] != b"RIFF":

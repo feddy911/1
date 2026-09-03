@@ -6,27 +6,27 @@ from engine.palette import INKS, TILE_INKS, iter_explored_colors, iter_tile_colo
 
 PLACEMENTS: List[Tuple[str, int, int, str, str]] = [
     # Первый этаж — палаты, коридор, кабинет
-    ("hospital_floor_1", 19, 3, "character", "patient_nastasya"),
-    ("hospital_floor_1", 22, 10, "character", "sanitary_panteleimon"),
-    ("hospital_floor_1", 8, 15, "character", "doctor_shpilkin"),
-    ("hospital_floor_1", 52, 3, "character", "possessed_patient"),
-    ("hospital_floor_1", 11, 3, "item", "note_1"),
-    ("hospital_floor_1", 27, 4, "item", "note_2"),
-    ("hospital_floor_1", 5, 16, "item", "diary_1"),
-    ("hospital_floor_1", 22, 15, "item", "diary_2"),
-    ("hospital_floor_1", 43, 5, "item", "diary_3"),
-    ("hospital_floor_1", 16, 10, "item", "key_warden"),
-    ("hospital_floor_1", 4, 14, "item", "key_doctor"),
-    ("hospital_floor_1", 12, 16, "item", "key_basement"),
-    ("hospital_floor_1", 5, 4, "item", "potion_heal"),
-    ("hospital_floor_1", 44, 5, "item", "potion_sanity"),
-    ("hospital_floor_1", 6, 5, "item", "item_knife"),
-    # Второй этаж — пока пустой зал, один расходник
-    ("hospital_floor_2", 10, 8, "item", "potion_heal"),
+    ("hospital_floor_1", 24, 6, "character", "patient_nastasya"),
+    ("hospital_floor_1", 30, 2, "character", "sanitary_panteleimon"),
+    ("hospital_floor_1", 5, 6, "character", "doctor_shpilkin"),
+    ("hospital_floor_1", 36, 6, "character", "possessed_patient"),
+    ("hospital_floor_1", 18, 6, "item", "note_1"),
+    ("hospital_floor_1", 28, 6, "item", "note_2"),
+    ("hospital_floor_1", 4, 6, "item", "diary_1"),
+    ("hospital_floor_1", 8, 6, "item", "diary_2"),
+    ("hospital_floor_1", 47, 6, "item", "diary_3"),
+    ("hospital_floor_1", 24, 2, "item", "key_warden"),
+    ("hospital_floor_1", 3, 5, "item", "key_doctor"),
+    ("hospital_floor_1", 53, 6, "item", "key_basement"),
+    ("hospital_floor_1", 19, 5, "item", "potion_heal"),
+    ("hospital_floor_1", 45, 5, "item", "potion_sanity"),
+    ("hospital_floor_1", 15, 6, "item", "item_knife"),
+    # Второй этаж — архив и кабинет
+    ("hospital_floor_2", 30, 2, "item", "potion_heal"),
     # Подвал
-    ("hospital_basement", 15, 8, "character", "shadow_enemy"),
-    ("hospital_basement", 40, 10, "character", "shadow_enemy"),
-    ("hospital_basement", 10, 10, "item", "document_1"),
+    ("hospital_basement", 28, 2, "character", "shadow_enemy"),
+    ("hospital_basement", 44, 2, "character", "shadow_enemy"),
+    ("hospital_basement", 43, 6, "item", "document_1"),
 ]
 
 
@@ -231,9 +231,9 @@ def _apply_phase1(conn) -> None:
     conn.executemany(
         "INSERT INTO door_locks (map_id, x, y, required_key_id) VALUES (?, ?, ?, ?)",
         [
-            ("hospital_floor_1", 8, 12, "key_warden"),
-            ("hospital_floor_2", 8, 12, "key_doctor"),
-            ("hospital_basement", 20, 10, "key_basement"),
+            ("hospital_floor_1", 12, 2, "key_warden"),
+            ("hospital_floor_2", 37, 3, "key_doctor"),
+            ("hospital_basement", 40, 3, "key_basement"),
         ],
     )
 
@@ -243,27 +243,27 @@ def _apply_phase1(conn) -> None:
            (id, map_id, x1, y1, x2, y2, name, first_visit_text, sanity_effect)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         [
-            ("f1_ward", "hospital_floor_1", 1, 1, 7, 6, "Палата",
-             "Палата. Запах карболки и сырой ваты. Кровать привинчена — значит, здесь не гости.", 0),
-            ("f1_hall", "hospital_floor_1", 1, 8, 55, 11, "Коридор",
-             "Коридор длиннее, чем здание. Лампы моргают, будто считают шаги.", -1),
-            ("f1_office", "hospital_floor_1", 1, 13, 15, 18, "Кабинет",
-             "Кабинет. Бумаги, пузырьки, чужой почерк. Здесь решают, кто вы.", 0),
-            ("f1_cafe", "hospital_floor_1", 41, 1, 55, 6, "Столовая",
+            ("f1_ward", "hospital_floor_1", 14, 4, 20, 7, "Палата",
+             "Палата. Железо кровати холоднее пола. Окно одно — во двор.", 0),
+            ("f1_hall", "hospital_floor_1", 13, 1, 55, 2, "Коридор",
+             "Коридор вдоль улицы. Лампы есть, двора отсюда не видно.", -1),
+            ("f1_office", "hospital_floor_1", 1, 1, 11, 7, "Кабинет",
+             "Кабинет. Анфилада от коридора. Бумаги, пузырьки, чужой почерк.", 0),
+            ("f1_cafe", "hospital_floor_1", 40, 4, 49, 7, "Столовая",
              "Столовая без еды. Стулья ждут тех, кого уже увели.", -2),
-            ("f1_stairs", "hospital_floor_1", 42, 13, 55, 18, "Лестница",
-             "Лестница пахнет сыростью снизу и одеколоном сверху.", 0),
-            ("f2_archive", "hospital_floor_2", 1, 1, 23, 6, "Архив",
+            ("f1_stairs", "hospital_floor_1", 51, 4, 55, 7, "Лестница",
+             "Лестничная клетка. Сырость снизу, одеколон сверху.", 0),
+            ("f2_archive", "hospital_floor_2", 1, 1, 15, 7, "Архив",
              "Закрытое крыло. Полки с историями болезней — или чужими именами.", -2),
-            ("f2_study", "hospital_floor_2", 1, 13, 15, 18, "Кабинет главврача",
+            ("f2_study", "hospital_floor_2", 32, 4, 48, 7, "Кабинет главврача",
              "Личный кабинет Шпилькина. Здесь письма не для академии.", -3),
-            ("f2_hall", "hospital_floor_2", 1, 8, 47, 11, "Коридор второго этажа",
+            ("f2_hall", "hospital_floor_2", 17, 1, 55, 2, "Коридор второго этажа",
              "Тише, чем внизу. Тишина здесь платная.", 0),
-            ("b_cells", "hospital_basement", 1, 1, 19, 6, "Камеры",
+            ("b_cells", "hospital_basement", 1, 1, 24, 7, "Камеры",
              "Камеры без табличек. Кто-то скреб ногтями по изнанке двери.", -4),
-            ("b_lab", "hospital_basement", 1, 10, 19, 18, "Лаборатория",
+            ("b_lab", "hospital_basement", 37, 4, 48, 7, "Лаборатория",
              "Лаборатория. На столе — следы мела и чего-то темнее мела.", -5),
-            ("b_hall", "hospital_basement", 21, 7, 58, 18, "Подвал",
+            ("b_hall", "hospital_basement", 25, 1, 55, 7, "Подвал",
              "Подвал дышит вам в затылок. Свет не доходит до углов — углы доходят сами.", -3),
             ("st_porch", "street_outside", 1, 7, 12, 13, "Крыльцо",
              "Ночь. Петербург. Туман липнет к лицу, как мокрый бинт.", 0),
@@ -291,7 +291,7 @@ def _apply_phase1(conn) -> None:
     )
 
     conn.execute(
-        """UPDATE map_connections SET target_x = 55
+        """UPDATE map_connections SET target_x = 54, target_y = 1
            WHERE source_map_id = 'street_outside' AND target_map_id = 'hospital_floor_1'"""
     )
 
@@ -312,31 +312,32 @@ def _apply_phase1(conn) -> None:
     _apply_phase10(conn)
     _apply_phase11(conn)
     _apply_palette(conn)
+    _apply_map_links(conn)
 
 
 PLACEMENTS_PHASE1: List[Tuple[str, int, int, str, str]] = [
-    ("hospital_floor_1", 19, 3, "character", "patient_nastasya"),
-    ("hospital_floor_1", 22, 10, "character", "sanitary_panteleimon"),
-    ("hospital_floor_1", 8, 15, "character", "doctor_shpilkin"),
-    ("hospital_floor_1", 52, 3, "character", "possessed_patient"),
-    ("hospital_floor_1", 11, 3, "item", "note_1"),
-    ("hospital_floor_1", 27, 4, "item", "note_2"),
-    ("hospital_floor_1", 5, 16, "item", "diary_1"),
-    ("hospital_floor_1", 22, 15, "item", "diary_2"),
-    ("hospital_floor_1", 43, 5, "item", "diary_3"),
-    ("hospital_floor_1", 16, 10, "item", "key_warden"),
-    ("hospital_floor_1", 4, 14, "item", "key_doctor"),
-    ("hospital_floor_1", 12, 16, "item", "key_basement"),
-    ("hospital_floor_1", 5, 4, "item", "potion_heal"),
-    ("hospital_floor_1", 44, 5, "item", "potion_sanity"),
-    ("hospital_floor_1", 6, 5, "item", "item_knife"),
-    ("hospital_floor_2", 10, 8, "item", "potion_heal"),
-    ("hospital_floor_2", 6, 16, "item", "letter_1"),
-    ("hospital_floor_2", 22, 10, "character", "archivist_klara"),
-    ("hospital_floor_2", 4, 3, "item", "note_case"),
-    ("hospital_basement", 30, 9, "character", "shadow_enemy"),
-    ("hospital_basement", 40, 11, "character", "shadow_enemy"),
-    ("hospital_basement", 10, 10, "item", "document_1"),
+    ("hospital_floor_1", 24, 6, "character", "patient_nastasya"),
+    ("hospital_floor_1", 30, 2, "character", "sanitary_panteleimon"),
+    ("hospital_floor_1", 5, 6, "character", "doctor_shpilkin"),
+    ("hospital_floor_1", 36, 6, "character", "possessed_patient"),
+    ("hospital_floor_1", 18, 6, "item", "note_1"),
+    ("hospital_floor_1", 28, 6, "item", "note_2"),
+    ("hospital_floor_1", 4, 6, "item", "diary_1"),
+    ("hospital_floor_1", 8, 6, "item", "diary_2"),
+    ("hospital_floor_1", 47, 6, "item", "diary_3"),
+    ("hospital_floor_1", 24, 2, "item", "key_warden"),
+    ("hospital_floor_1", 3, 5, "item", "key_doctor"),
+    ("hospital_floor_1", 53, 6, "item", "key_basement"),
+    ("hospital_floor_1", 19, 5, "item", "potion_heal"),
+    ("hospital_floor_1", 45, 5, "item", "potion_sanity"),
+    ("hospital_floor_1", 15, 6, "item", "item_knife"),
+    ("hospital_floor_2", 30, 2, "item", "potion_heal"),
+    ("hospital_floor_2", 40, 6, "item", "letter_1"),
+    ("hospital_floor_2", 8, 6, "character", "archivist_klara"),
+    ("hospital_floor_2", 6, 4, "item", "note_case"),
+    ("hospital_basement", 28, 2, "character", "shadow_enemy"),
+    ("hospital_basement", 44, 2, "character", "shadow_enemy"),
+    ("hospital_basement", 43, 6, "item", "document_1"),
 ]
 
 
@@ -731,9 +732,12 @@ def _apply_phase3(conn) -> None:
                 "План здания не совпадает с шагами. Лестница вела сюда — или вы сами.",
                 "data/maps/floor_1.txt",
                 57,
-                20,
+                12,
             ),
         ],
+    )
+    conn.execute(
+        "UPDATE maps SET width = 57, height = 12 WHERE id = 'hospital_floor_1'"
     )
 
     conn.executemany(
@@ -752,7 +756,7 @@ def _apply_phase3(conn) -> None:
             target_map_id, target_x, target_y, description)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
         [
-            ("street_outside", "entrance", 0, 10, "hospital_floor_1", 55, 9,
+            ("street_outside", "entrance", 0, 10, "hospital_floor_1", 54, 1,
              "Вернуться в клинику"),
             ("street_outside", "entrance", 26, 6, "street_traktir", 1, 7,
              "Войти в трактир"),
@@ -775,7 +779,7 @@ def _apply_phase3(conn) -> None:
              "Вывеска «У канала». Буквы кривые, как после удара.", 0),
             ("tav_room", "street_traktir", 1, 1, 34, 12, "Зал",
              "Самовар шумит, будто держит речь. Здесь ещё пьют за живых.", -1),
-            ("bred_hall", "hospital_bred", 1, 8, 55, 11, "Чужой коридор",
+            ("bred_hall", "hospital_bred", 13, 1, 55, 2, "Чужой коридор",
              "Лампа горит вчерашним светом. Шаги ваши уже прошли здесь без вас.", -8),
         ],
     )
@@ -1095,32 +1099,32 @@ def _apply_phase6(conn) -> None:
         (
             "trigger_whisper",
             "hospital_floor_1",
-            12,
-            9,
+            18,
+            1,
             "Шёпот за лампой. Не ваш. И не живой.",
             -2,
         ),
         (
             "trigger_cafe",
             "hospital_floor_1",
-            48,
-            5,
+            45,
+            6,
             "Стул ждёт того, кого уже увели. Рядом ещё один — занят.",
             -2,
         ),
         (
             "trigger_archive",
             "hospital_floor_2",
-            6,
-            4,
+            10,
+            5,
             "Папка без корешка. Дата — сегодняшняя. Имени нет.",
             -2,
         ),
         (
             "trigger_cell",
             "hospital_basement",
-            10,
-            8,
+            11,
+            2,
             "За дверью камеры скребут ногтем. Ногтя нет.",
             -3,
         ),
@@ -1173,12 +1177,12 @@ def _apply_phase7(conn) -> None:
            VALUES (?, 'on_enter', ?, ?, ?, NULL, NULL, 0, 0, ?, ?, ?)""",
         (
             "trigger_study",
-            "hospital_floor_2:8,15",
+            "hospital_floor_2:42,5",
             "Под ковром щель. В ней клочок: «Не имя. Номер. Так спокойнее.»",
             -2,
             "hospital_floor_2",
-            8,
-            15,
+            42,
+            5,
         ),
     )
     conn.execute(
@@ -1238,6 +1242,105 @@ def _apply_phase11(conn) -> None:
             "Пациент N. Пробуждение без имени. На полях чужое: Лизавета. "
             "Не выпускать на Сенную, пока не подпишет себя и не вспомнит, кому должен.",
         ),
+    )
+
+
+def _apply_map_links(conn) -> None:
+    """Лестницы и выходы садятся на живые S/s/E, не на старый кроссворд 20 клеток в высоту."""
+    conn.executemany(
+        "UPDATE maps SET width = ?, height = ? WHERE id = ?",
+        [
+            (57, 12, "hospital_floor_1"),
+            (57, 12, "hospital_floor_2"),
+            (57, 12, "hospital_basement"),
+            (60, 20, "street_outside"),
+            (36, 14, "street_traktir"),
+            (57, 12, "hospital_bred"),
+        ],
+    )
+    conn.execute(
+        """DELETE FROM map_connections
+           WHERE source_map_id IN (
+             'hospital_floor_1', 'hospital_floor_2', 'hospital_basement'
+           )"""
+    )
+
+    floor1_up = (53, 6)
+    floor1_down = (53, 6)
+    to_floor1 = (53, 6)
+    to_street = (1, 9)
+    rows = []
+    for x, y in ((51, 4), (51, 5)):
+        rows.append(
+            (
+                "hospital_floor_1",
+                "stairs_up",
+                x,
+                y,
+                "hospital_floor_2",
+                floor1_up[0],
+                floor1_up[1],
+                "Лестница на второй этаж",
+            )
+        )
+    for x, y in ((53, 4), (53, 5)):
+        rows.append(
+            (
+                "hospital_floor_1",
+                "stairs_down",
+                x,
+                y,
+                "hospital_basement",
+                floor1_down[0],
+                floor1_down[1],
+                "Лестница в подвал",
+            )
+        )
+    for x, y in ((56, 1), (56, 2)):
+        rows.append(
+            (
+                "hospital_floor_1",
+                "exit",
+                x,
+                y,
+                "street_outside",
+                to_street[0],
+                to_street[1],
+                "Выход на улицу",
+            )
+        )
+    for x, y in ((51, 4), (51, 5), (53, 4), (53, 5)):
+        rows.append(
+            (
+                "hospital_floor_2",
+                "stairs_down",
+                x,
+                y,
+                "hospital_floor_1",
+                to_floor1[0],
+                to_floor1[1],
+                "Лестница вниз на первый этаж",
+            )
+        )
+    for x, y in ((51, 4), (51, 5), (53, 4), (53, 5)):
+        rows.append(
+            (
+                "hospital_basement",
+                "stairs_up",
+                x,
+                y,
+                "hospital_floor_1",
+                to_floor1[0],
+                to_floor1[1],
+                "Лестница вверх на первый этаж",
+            )
+        )
+    conn.executemany(
+        """INSERT INTO map_connections
+           (source_map_id, connection_type, source_x, source_y,
+            target_map_id, target_x, target_y, description)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+        rows,
     )
 
 
