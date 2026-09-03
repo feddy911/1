@@ -91,7 +91,10 @@ def assert_map_walkable(errors, name, grid, start, expect_width):
 def main():
     errors = []
     from engine.sound import set_enabled as _mute_sound
+    from engine.music import set_enabled as _mute_music
+
     _mute_sound(False)
+    _mute_music(False)
     src = (ROOT / "engine" / "game_engine.py").read_text(encoding="utf-8")
     tree = ast.parse(src)
     methods = {
@@ -1002,6 +1005,36 @@ def main():
         errors.append("нет зажатой ходьбы или кэша FOV")
     if "KeySym.F4" not in ge_src or "_toggle_glyph_mode" not in ge_src:
         errors.append("нет переключателя буквы/картинки")
+    if "KeySym.M" not in ge_src or "clinic_music" not in ge_src:
+        errors.append("нет mute музыки")
+
+    from engine.constants import BRED_MAP_ID
+    from engine.music import MAP_TRACKS, resolve_source
+
+    expected_tracks = {
+        "hospital_floor_1": "clinic_hall",
+        "hospital_floor_2": "clinic_hall",
+        "hospital_basement": "basement",
+        "street_outside": "street_canal",
+        "street_traktir": "traktir",
+        BRED_MAP_ID: "bred",
+    }
+    if MAP_TRACKS != expected_tracks:
+        errors.append("MAP_TRACKS не совпадает с картами")
+    for stem in sorted(set(MAP_TRACKS.values())):
+        if resolve_source(stem) is None:
+            errors.append(f"нет петли data/music/{stem}")
+
+    from engine.clinic_tiles import TILE_HEIGHT, TILE_WIDTH
+    from engine.portraits import PORTRAIT_COLS, PORTRAIT_ROWS
+
+    box_aspect = (PORTRAIT_COLS * TILE_WIDTH) / (PORTRAIT_ROWS * TILE_HEIGHT)
+    if abs(box_aspect - 0.75) > 0.05:
+        errors.append("рамка портрета не 3:4")
+    if "_fit_portrait_dest" not in (ROOT / "engine" / "renderer.py").read_text(
+        encoding="utf-8"
+    ):
+        errors.append("портрет снова растягивается в клетку")
 
     engine._load_map("hospital_floor_1")
     engine.player.x, engine.player.y = 18, 2

@@ -34,6 +34,7 @@ from engine.renderer import Renderer
 from engine.sanity_system import SanSystem
 from engine.save_system import has_save, read_save, restore_map_states, write_save
 from engine.sound import play as play_sound
+from engine import music as clinic_music
 from engine.trigger_system import TriggerSystem
 
 MOVE_STEP_SECONDS = 0.15
@@ -87,6 +88,7 @@ class GameEngine:
 
         self.current_dialogue_text = ''
         self.current_dialogue_speaker = ''
+        self.current_dialogue_portrait = ''
         self.current_dialogue_choices: List[str] = []
 
         self.fov_system = None
@@ -155,6 +157,14 @@ class GameEngine:
             running = self.handle_events()
             if running:
                 self._tick_held_walk(dt)
+            if self.state in (
+                GameState.CLASS_SELECTION,
+                GameState.ENDING,
+                GameState.GAME_OVER,
+            ):
+                clinic_music.stop()
+            else:
+                clinic_music.set_ducked(self._world_is_frozen())
             if self.san_system:
                 for event in self.san_system.update():
                     self.add_message(event)
@@ -220,6 +230,7 @@ class GameEngine:
         """Выход: записать слот, если есть партия. Титул, смерть и финал не пишут."""
         if self._can_save():
             write_save(self, path)
+        clinic_music.stop()
         return False
 
     def load_game(self, path=None) -> bool:
@@ -441,6 +452,7 @@ class GameEngine:
         self._compute_fov()
         first_visit = map_id not in self.visited_maps
         self.visited_maps.add(map_id)
+        clinic_music.set_for_map(map_id)
         if first_visit and map_data.get('description'):
             self.add_message(map_data['description'])
         else:
@@ -518,6 +530,10 @@ class GameEngine:
     def _dispatch_key(self, event) -> bool:
         if event.sym == tcod.event.KeySym.F4:
             self._toggle_glyph_mode()
+            return True
+        if event.sym == tcod.event.KeySym.M:
+            muted = clinic_music.toggle_mute()
+            self.add_message("Музыка молчит." if muted else "Музыка снова в коридоре.")
             return True
         if self.state == GameState.CLASS_SELECTION:
             return self._handle_class_selection(event)
@@ -845,6 +861,7 @@ class GameEngine:
                 self.state = GameState.PLAYING
             self.current_dialogue_text = ''
             self.current_dialogue_choices = []
+            self.current_dialogue_portrait = ''
             return
         if kind == 'choices':
             self.current_dialogue_choices = self.dialogue_engine.get_choices()
@@ -873,6 +890,7 @@ class GameEngine:
                 self.state = GameState.PLAYING
             self.current_dialogue_text = ''
             self.current_dialogue_choices = []
+            self.current_dialogue_portrait = ''
         elif event.sym in (tcod.event.KeySym.SPACE, tcod.event.KeySym.RETURN):
             if self.current_dialogue_choices:
                 return True
@@ -1100,6 +1118,7 @@ class GameEngine:
                     ):
                         self.state = GameState.DIALOGUE
                         self.current_dialogue_speaker = entity.name
+                        self.current_dialogue_portrait = getattr(entity, "id", "") or ""
                         kind, text = self.dialogue_engine.present()
                         self._apply_dialogue_view(kind, text)
                         return
@@ -1183,6 +1202,7 @@ class GameEngine:
         self.state = GameState.ENDING
         title, _body = ending_text(ending_id, getattr(self.player, 'id', ''))
         self.add_message(title)
+        clinic_music.stop()
         play_sound("end")
 
     def _present_testimony(self, name: str, content: str, first_hearing: bool = True):
@@ -1387,6 +1407,7 @@ class GameEngine:
                 self.current_dialogue_text,
                 self.current_dialogue_speaker,
                 self.current_dialogue_choices,
+                self.current_dialogue_portrait,
             )
 
         if self.showing_help:

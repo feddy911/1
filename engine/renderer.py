@@ -8,8 +8,29 @@ import tcod
 from tcod import libtcodpy
 
 from engine.constants import LEGEND_WIDTH, SCREEN_HEIGHT, SCREEN_WIDTH, TILE_LEGEND
-from engine.clinic_tiles import map_glyph
+from engine.clinic_tiles import TILE_HEIGHT, TILE_WIDTH, map_glyph
 from engine.palette import INKS, explored_color_dicts, hex_to_rgb, visible_color_dicts
+from engine.portraits import PORTRAIT_COLS, PORTRAIT_ROWS, load_pixels
+
+
+def _fit_portrait_dest(box_x, box_y, box_w, box_h, src_w, src_h):
+    """Вписать масло в клетку, не растягивая 3:4 в 16×24."""
+    if src_w <= 0 or src_h <= 0 or box_w <= 0 or box_h <= 0:
+        return (box_x, box_y, box_w, box_h)
+    src_aspect = src_w / src_h
+    box_aspect = box_w / box_h
+    if src_aspect > box_aspect:
+        draw_w = box_w
+        draw_h = box_w / src_aspect
+    else:
+        draw_h = box_h
+        draw_w = box_h * src_aspect
+    return (
+        box_x + (box_w - draw_w) / 2,
+        box_y + (box_h - draw_h) / 2,
+        draw_w,
+        draw_h,
+    )
 
 
 def _ink(name: str):
@@ -90,7 +111,9 @@ class Renderer:
         self._san_wait = 50
         self._san_hold = 0
         self._san_rim_marks = []
-    
+        self._console_render = None
+        self._portrait_textures = {}
+        self._pending_portrait = None 
     def load_tile_colors_from_db(self, db_loader):
         """Загрузить цвета тайлов из БД."""
         try:
@@ -468,15 +491,28 @@ class Renderer:
                     msg = msg[:self.screen_width - 2]
                 self.console.print(1, y, msg, fg=COLOR_TEXT)
             
-    def draw_dialogue(self, text: str, speaker_name: str = '', choices=None):
-        """Окно диалога, при необходимости — с вариантами ответа."""
+    def draw_dialogue(self, text: str, speaker_name: str = '', choices=None,
+                      portrait_id: str = ''):
+        """Окно диалога, при необходимости — бюст слева и варианты ответа."""
         if not text and not choices:
             return
 
         choices = choices or []
+        show_face = bool(portrait_id) and getattr(
+            self.game_engine, "use_sprites", True
+        )
+        if show_face and load_pixels(portrait_id) is None:
+            show_face = False
+
         box_width = self.screen_width - 4
         extra = max(0, len(choices))
         box_height = 5 + extra
+        text_x = 4
+        wrap_width = box_width - 4
+        if show_face:
+            box_height = max(box_height, PORTRAIT_ROWS + 2)
+            text_x = 4 + PORTRAIT_COLS + 1
+            wrap_width = box_width - PORTRAIT_COLS - 3
         box_y = max(2, self.map_height - box_height - 1)
 
         self.console.print(2, box_y, '┌' + '─' * (box_width - 2) + '┐', fg=COLOR_DIALOGUE)
@@ -485,23 +521,30 @@ class Renderer:
         self.console.print(2, box_y + box_height - 1, '└' + '─' * (box_width - 2) + '┘', fg=COLOR_DIALOGUE)
 
         if speaker_name:
-            self.console.print(4, box_y, f"[ {speaker_name} ]", fg=COLOR_DIALOGUE)
+            self.console.print(text_x, box_y, f"[ {speaker_name} ]", fg=COLOR_DIALOGUE)
 
-        wrapped = self._wrap_text(text or '', box_width - 4)
-        for i, line in enumerate(wrapped[:2]):
-            self.console.print(4, box_y + 1 + i, line, fg=COLOR_DIALOGUE)
+        wrapped = self._wrap_text(text or '', wrap_width)
+        text_lines = max(2, box_height - 3 - extra) if show_face else 2
+        for i, line in enumerate(wrapped[:text_lines]):
+            self.console.print(text_x, box_y + 1 + i, line, fg=COLOR_DIALOGUE)
 
         if choices:
             for i, choice in enumerate(choices):
                 label = f"{i + 1}. {choice}"
-                if len(label) > box_width - 6:
-                    label = label[: box_width - 9] + "..."
-                self.console.print(4, box_y + 3 + i, label, fg=COLOR_DIALOGUE)
+                if len(label) > wrap_width - 2:
+                    label = label[: wrap_width - 5] + "..."
+                self.console.print(text_x, box_y + box_height - 2 - extra + i, label, fg=COLOR_DIALOGUE)
             hint = f"[1-{len(choices)} — ответ]"
         else:
             hint = "[Space — далее]"
         self.console.print(self.screen_width - len(hint) - 4, box_y + box_height - 1,
             hint, fg=COLOR_TEXT)
+
+        if show_face:
+            self._pending_portrait = (
+                portrait_id,
+                (3, box_y + 1, PORTRAIT_COLS, PORTRAIT_ROWS),
+            )
 
     def draw_ending(self, title: str, body: str):
         """Финальный экран новеллы."""
@@ -623,13 +666,67 @@ class Renderer:
                 self.console.print(1, y, desc, fg=libtcodpy.Color(200, 180, 100))
             
     def present(self, context):
-        """Вывод кадра. keep_aspect держит шаг буквы; масштаб — под окно."""
-        context.present(
-            self.console,
-            keep_aspect=True,
-            integer_scaling=False,
+        """Вывод кадра. keep_aspect держит шаг буквы; масло — поверх консоли."""
+        renderer = getattr(context, "sdl_renderer", None)
+        atlas = getattr(context, "sdl_atlas", None)
+        pending = self._pending_portrait
+        self._pending_portrait = None
+        if renderer is None or atlas is None:
+            context.present(
+                self.console,
+                keep_aspect=True,
+                integer_scaling=False,
+            )
+            return
+        try:
+            self._present_with_oil(context, renderer, atlas, pending)
+        except Exception:
+            context.present(
+                self.console,
+                keep_aspect=True,
+                integer_scaling=False,
+            )
+
+    def _present_with_oil(self, context, renderer, atlas, pending):
+        import tcod.render
+
+        if self._console_render is None:
+            self._console_render = tcod.render.SDLConsoleRender(atlas)
+        renderer.draw_color = (0, 0, 0, 255)
+        renderer.clear()
+        console_tex = self._console_render.render(self.console)
+        window = context.sdl_window
+        ww, wh = window.size
+        scale = min(
+            ww / (self.screen_width * TILE_WIDTH),
+            wh / (self.screen_height * TILE_HEIGHT),
         )
-        
+        draw_w = self.screen_width * TILE_WIDTH * scale
+        draw_h = self.screen_height * TILE_HEIGHT * scale
+        ox = (ww - draw_w) / 2
+        oy = (wh - draw_h) / 2
+        renderer.copy(console_tex, dest=(ox, oy, draw_w, draw_h))
+        if pending:
+            portrait_id, (tx, ty, tw, th) = pending
+            cached = self._portrait_textures.get(portrait_id)
+            texture = src_w = src_h = None
+            if isinstance(cached, tuple) and len(cached) == 3:
+                texture, src_w, src_h = cached
+            if texture is None:
+                pixels = load_pixels(portrait_id)
+                if pixels is not None:
+                    src_h, src_w = int(pixels.shape[0]), int(pixels.shape[1])
+                    texture = renderer.upload_texture(pixels)
+                    self._portrait_textures[portrait_id] = (texture, src_w, src_h)
+            if texture is not None and src_w and src_h:
+                box_x = ox + tx * TILE_WIDTH * scale
+                box_y = oy + ty * TILE_HEIGHT * scale
+                box_w = tw * TILE_WIDTH * scale
+                box_h = th * TILE_HEIGHT * scale
+                dest = _fit_portrait_dest(box_x, box_y, box_w, box_h, src_w, src_h)
+                renderer.copy(texture, dest=dest)
+        renderer.present()
+
     def is_light_source_visible(self, light_x: int, light_y: int, 
                                   light_radius: int, player_x: int, player_y: int,
                                   player_fov_radius: int) -> bool:
@@ -751,6 +848,7 @@ class Renderer:
             'r — читать записку | i — инвентарь',
             'F5 — записать ночь | F9 — вернуться',
             'F4 — буквы / картинки',
+            'M — музыка',
             '? / F1 — это окно помощи',
             'q / Esc — выход: ночь запишется',
         ]
