@@ -113,7 +113,7 @@ def main():
         "load_game",
         "quit_and_save",
         "_present_testimony",
-        "_maybe_study_desk",
+        "_try_search",
         "_handle_combat",
     ):
         if name not in methods:
@@ -295,18 +295,59 @@ def main():
         errors.append("в подвале нет столбов")
     assert_map_walkable(errors, "basement", basement, (53, 6), 57)
     street = load_map(ROOT / "data" / "maps" / "street.txt")
-    if street[9][0] != "E" or street[17][10] != "=":
+    if street[9][0] != "E" or street[16][10] != "=":
         errors.append("улица: нет выхода или канала")
-    if street[6][26] != "E":
+    if street[6][32] != "E" or street[6][33] != "E":
         errors.append("вход в трактир съехал")
-    if street[7][26] not in WALKABLE_TILES or street[5][26] not in WALKABLE_TILES:
-        errors.append("дверь трактира не открывается с улицы и изнутри")
+    if street[7][32] not in WALKABLE_TILES:
+        errors.append("дверь трактира не открывается с улицы")
+    if street[6][12] not in WALKABLE_TILES or street[5][12] not in WALKABLE_TILES:
+        errors.append("нет проёма во двор")
+    if street[3][11] != "D":
+        errors.append("нет двери из двора в службу")
     assert_map_walkable(errors, "street", street, (1, 9), 60)
     traktir = load_map(ROOT / "data" / "maps" / "traktir.txt")
     if traktir[7][0] != "E" or traktir[7][1] not in WALKABLE_TILES:
-        errors.append("трактир: нет выхода")
+        errors.append("трактир: нет выхода на улицу")
+    if traktir[7][35] != "E" or traktir[7][34] not in WALKABLE_TILES:
+        errors.append("трактир: нет чёрного хода")
+    if traktir[3][7] != "T":
+        errors.append("нет стойки к улице")
+    if traktir[7][26] != "D":
+        errors.append("нет двери в кухню")
+    if street[3][26] != "E":
+        errors.append("чёрный ход не выходит во двор")
     assert_map_walkable(errors, "traktir", traktir, (1, 7), 36)
-    if db.get_connection_at_position("street_outside", 26, 6) is None:
+    from engine.constants import SEARCHABLE_TILES
+    from engine.db_migrate import CONTAINER_LOOT
+
+    floor_items = list(
+        db.conn.execute(
+            "SELECT map_id, x, y, spawn_id FROM map_placements WHERE spawn_type = 'item'"
+        )
+    )
+    if floor_items:
+        errors.append(f"предметы снова на полу: {floor_items}")
+    loot_grids = {
+        "hospital_floor_1": floor,
+        "hospital_floor_2": floor2,
+        "hospital_basement": basement,
+        "street_outside": street,
+        "street_traktir": traktir,
+    }
+    for map_id, x, y, item_id in CONTAINER_LOOT:
+        grid = loot_grids.get(map_id)
+        if grid is None:
+            errors.append(f"лут {item_id} на неизвестной карте {map_id}")
+            continue
+        if y >= len(grid) or x >= len(grid[y]) or grid[y][x] not in SEARCHABLE_TILES:
+            cell = grid[y][x] if grid and y < len(grid) and x < len(grid[y]) else "?"
+            errors.append(f"лут {item_id} не в мебели ({map_id} {x},{y}) {cell!r}")
+    if floor[1][12] != '"':
+        errors.append("нет картины в кабинете 1 этажа")
+    if street[15][18] != "T":
+        errors.append("нет скамьи у канала")
+    if db.get_connection_at_position("street_outside", 32, 6) is None:
         errors.append("нет связи улица → трактир")
     link_grids = {
         "hospital_floor_1": floor,
@@ -472,8 +513,10 @@ def main():
         if kind == "choices":
             de3.choose(2)
             fin3 = de3.finish()
-            if "sennaya_name" not in (fin3.get("flags") or []):
-                errors.append(f"нищий не отдаёт имя: {fin3}")
+            if "sennaya_name" in (fin3.get("flags") or []) or "archive_name" in (
+                fin3.get("flags") or []
+            ):
+                errors.append(f"нищий сам выдал имя: {fin3}")
         else:
             errors.append("у нищего нет выбора")
     else:
@@ -538,8 +581,8 @@ def main():
     floor2_ids = [getattr(e, "id", "") for e in engine.entities]
     if "archivist_klara" not in floor2_ids:
         errors.append("архивариус не стоит на 2 этаже")
-    if "note_case" not in floor2_ids:
-        errors.append("в архиве нет дела")
+    if not db.get_container_loot("hospital_floor_2", 1, 1):
+        errors.append("в архиве нет дела в шкафу")
     de4 = DialogueEngine(db)
     if de4.start_dialogue("dialogue_archivist_intro", flags=set(), san=50):
         de4.present()
@@ -633,7 +676,9 @@ def main():
         errors.append("один флаг правды открывает туман")
     if not can_pass_fog({"archive_name", "guilt_admitted"}):
         errors.append("имя и долг вместе не открывают туман")
-    if not has_name({"sennaya_name"}) or not has_debt({"nastasya_escape"}):
+    if has_name({"sennaya_name"}):
+        errors.append("нищий снова считается именем без архива")
+    if not has_name({"archive_name"}) or not has_debt({"nastasya_escape"}):
         errors.append("флаги имени и долга перепутаны")
     if debt_face({"guilt_admitted"}) != "Лизавете":
         errors.append(f"лицо долга вины: {debt_face({'guilt_admitted'})}")
@@ -657,6 +702,84 @@ def main():
             errors.append(f"Пантелеймон не называет Лизавету: {kind_p} {text_p}")
     else:
         errors.append("не стартует Пантелеймон для лица долга")
+
+    de_w = DialogueEngine(db)
+    if de_w.start_dialogue("dialogue_watchman_intro", flags=set(), san=70):
+        de_w.present()
+        de_w.advance()
+        de_w.choose(1)
+        fin_w = de_w.finish()
+        if "guilt_admitted" in (fin_w.get("flags") or []):
+            errors.append(f"постовой сам засчитал долг: {fin_w}")
+    else:
+        errors.append("не стартует постовой")
+
+    from engine.dialogue_keys import MAX_DIALOGUE_CHOICES, choice_index_from_key
+
+    if choice_index_from_key("N5") != 4 or choice_index_from_key("KP_5") != 4:
+        errors.append("клавиша 5 не даёт пятый ответ")
+    if choice_index_from_key("F5") is not None:
+        errors.append("F5 не должна быть ответом")
+    if choice_index_from_key("N9") != 8 or choice_index_from_key("N10") is not None:
+        errors.append("диалог должен брать 1–9, не 10")
+    de_five = DialogueEngine(db)
+    if de_five.start_dialogue(
+        "dialogue_watchman_intro",
+        flags={"class_seeker", "knows_lizaveta"},
+        san=70,
+    ):
+        de_five.present()
+        de_five.advance()
+        n_five = len(de_five.get_choices())
+        if n_five != 5:
+            errors.append(f"у постового с классом и бумагой не 5 ответов: {de_five.get_choices()}")
+    else:
+        errors.append("не стартует постовой для пяти ответов")
+
+    pile = {
+        "archive_name",
+        "guilt_admitted",
+        "nastasya_escape",
+        "knows_lizaveta",
+        "class_seeker",
+        "broke_door",
+        "mystic_trace",
+        "seeker_trace",
+    }
+    max_n = 0
+    max_id = ""
+    for (did,) in db.conn.execute("SELECT id FROM dialogues"):
+        de_max = DialogueEngine(db)
+        if not de_max.start_dialogue(did, flags=pile, san=70):
+            continue
+        de_max.present()
+        de_max.advance()
+        n_opts = len(de_max.get_choices())
+        if n_opts > max_n:
+            max_n = n_opts
+            max_id = did
+    if max_n > MAX_DIALOGUE_CHOICES:
+        errors.append(
+            f"живой потолок ответов {max_n} у {max_id} > {MAX_DIALOGUE_CHOICES}"
+        )
+    engine_src = (ROOT / "engine" / "game_engine.py").read_text(encoding="utf-8")
+    if "choice_index_from_key" not in engine_src:
+        errors.append("движок диалога не берёт клавиши 1–9")
+
+    canal_note = engine.entity_factory.create_item("note_canal")
+    if canal_note:
+        from engine.quest_system import QuestSystem as _NoteQuest
+
+        engine.quest_system = engine.quest_system or _NoteQuest(db)
+        engine.flags.discard("guilt_admitted")
+        engine.flags.discard("knows_lizaveta")
+        if canal_note.id in engine.quest_system.found_notes:
+            engine.quest_system.found_notes.remove(canal_note.id)
+        engine._read_note(canal_note)
+        if "guilt_admitted" not in engine.flags:
+            errors.append("записка с набережной не возвращает долг")
+        engine.flags.discard("guilt_admitted")
+        engine.flags.discard("knows_lizaveta")
 
     de_face = DialogueEngine(db)
     if de_face.start_dialogue("dialogue_shpilkin_repeat", flags={"guilt_admitted"}, san=70):
@@ -865,22 +988,34 @@ def main():
             errors.append(f"записка без слова «показание»: {joined}")
 
     engine._load_map("hospital_floor_2")
-    engine.flags.discard("study_desk")
-    engine.player.x, engine.player.y = 33, 5
+    engine.flags.discard("seeker_trace")
+    for flag in list(engine.flags):
+        if str(flag).startswith("searched:hospital_floor_2:34:5"):
+            engine.flags.discard(flag)
+    engine.player.x, engine.player.y = 34, 6
     engine.messages = []
-    engine._try_move(1, 0)
-    if "study_desk" not in engine.flags:
-        errors.append("бюро кабинета молчит")
+    engine._try_interact()
     if "seeker_trace" not in engine.flags:
         errors.append("искатель не оставляет след на бюро")
     desk_text = " ".join(engine.messages)
-    if "Пациент вспоминает" not in desk_text and "черновик" not in desk_text.lower():
-        errors.append(f"бюро без черновика: {desk_text}")
+    if "Пациент вспоминает" not in desk_text:
+        errors.append(f"бюро без письма: {desk_text}")
     before = list(engine.messages)
-    engine._try_move(1, 0)
+    engine._try_interact()
     extra = engine.messages[len(before) :]
     if any("Пациент вспоминает" in m for m in extra):
-        errors.append("бюро кабинета повторяет черновик")
+        errors.append("бюро кабинета отдаёт письмо дважды")
+
+    engine._load_map("hospital_floor_1")
+    for flag in list(engine.flags):
+        if str(flag).startswith("searched:hospital_floor_1:1:1"):
+            engine.flags.discard(flag)
+    engine.player.x, engine.player.y = 2, 1
+    engine.messages = []
+    engine._try_interact()
+    cab = " ".join(engine.messages)
+    if "Нащупали" not in cab and "ключ" not in cab.lower() and "дневник" not in cab.lower():
+        errors.append(f"шкаф кабинета пуст при обыске: {cab}")
 
     from engine.game_engine import GameState as _GameState
 
@@ -1026,11 +1161,14 @@ def main():
             errors.append(f"нет петли data/music/{stem}")
 
     from engine.clinic_tiles import TILE_HEIGHT, TILE_WIDTH
-    from engine.portraits import PORTRAIT_COLS, PORTRAIT_ROWS
+    from engine.portraits import PORTRAIT_COLS, PORTRAIT_FILES, PORTRAIT_ROWS, portrait_path
 
     box_aspect = (PORTRAIT_COLS * TILE_WIDTH) / (PORTRAIT_ROWS * TILE_HEIGHT)
     if abs(box_aspect - 0.75) > 0.05:
         errors.append("рамка портрета не 3:4")
+    for pid, name in PORTRAIT_FILES.items():
+        if portrait_path(pid) is None:
+            errors.append(f"нет портрета data/portraits/{name}")
     if "_fit_portrait_dest" not in (ROOT / "engine" / "renderer.py").read_text(
         encoding="utf-8"
     ):

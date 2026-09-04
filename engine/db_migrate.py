@@ -5,28 +5,12 @@ from engine.palette import INKS, TILE_INKS, iter_explored_colors, iter_tile_colo
 
 
 PLACEMENTS: List[Tuple[str, int, int, str, str]] = [
-    # Первый этаж — палаты, коридор, кабинет
     ("hospital_floor_1", 24, 6, "character", "patient_nastasya"),
     ("hospital_floor_1", 30, 2, "character", "sanitary_panteleimon"),
     ("hospital_floor_1", 5, 6, "character", "doctor_shpilkin"),
     ("hospital_floor_1", 36, 6, "character", "possessed_patient"),
-    ("hospital_floor_1", 18, 6, "item", "note_1"),
-    ("hospital_floor_1", 28, 6, "item", "note_2"),
-    ("hospital_floor_1", 4, 6, "item", "diary_1"),
-    ("hospital_floor_1", 8, 6, "item", "diary_2"),
-    ("hospital_floor_1", 47, 6, "item", "diary_3"),
-    ("hospital_floor_1", 24, 2, "item", "key_warden"),
-    ("hospital_floor_1", 3, 5, "item", "key_doctor"),
-    ("hospital_floor_1", 53, 6, "item", "key_basement"),
-    ("hospital_floor_1", 19, 5, "item", "potion_heal"),
-    ("hospital_floor_1", 45, 5, "item", "potion_sanity"),
-    ("hospital_floor_1", 15, 6, "item", "item_knife"),
-    # Второй этаж — архив и кабинет
-    ("hospital_floor_2", 30, 2, "item", "potion_heal"),
-    # Подвал
     ("hospital_basement", 28, 2, "character", "shadow_enemy"),
     ("hospital_basement", 44, 2, "character", "shadow_enemy"),
-    ("hospital_basement", 43, 6, "item", "document_1"),
 ]
 
 
@@ -51,6 +35,7 @@ TILE_TRANSPARENCY = [
     ("T", 0, "Стол"),
     ("C", 0, "Стул"),
     ("=", 1, "Канал"),
+    ('"', 1, "Картина"),
 ]
 
 
@@ -267,9 +252,9 @@ def _apply_phase1(conn) -> None:
              "Подвал дышит вам в затылок. Свет не доходит до углов — углы доходят сами.", -3),
             ("st_porch", "street_outside", 1, 7, 12, 13, "Крыльцо",
              "Ночь. Петербург. Туман липнет к лицу, как мокрый бинт.", 0),
-            ("st_embankment", "street_outside", 1, 14, 58, 16, "Набережная",
+            ("st_embankment", "street_outside", 1, 14, 44, 15, "Набережная",
              "Канал чёрный, без отражений. Город есть — и города нет.", -2),
-            ("st_fog", "street_outside", 45, 1, 58, 15, "Туман",
+            ("st_fog", "street_outside", 45, 7, 58, 15, "Туман",
              "Дальше — вата и фонари, которые не обещают улицы.", 0),
         ],
     )
@@ -311,6 +296,7 @@ def _apply_phase1(conn) -> None:
     _apply_phase7(conn)
     _apply_phase10(conn)
     _apply_phase11(conn)
+    _apply_phase12(conn)
     _apply_palette(conn)
     _apply_map_links(conn)
 
@@ -320,24 +306,9 @@ PLACEMENTS_PHASE1: List[Tuple[str, int, int, str, str]] = [
     ("hospital_floor_1", 30, 2, "character", "sanitary_panteleimon"),
     ("hospital_floor_1", 5, 6, "character", "doctor_shpilkin"),
     ("hospital_floor_1", 36, 6, "character", "possessed_patient"),
-    ("hospital_floor_1", 18, 6, "item", "note_1"),
-    ("hospital_floor_1", 28, 6, "item", "note_2"),
-    ("hospital_floor_1", 4, 6, "item", "diary_1"),
-    ("hospital_floor_1", 8, 6, "item", "diary_2"),
-    ("hospital_floor_1", 47, 6, "item", "diary_3"),
-    ("hospital_floor_1", 24, 2, "item", "key_warden"),
-    ("hospital_floor_1", 3, 5, "item", "key_doctor"),
-    ("hospital_floor_1", 53, 6, "item", "key_basement"),
-    ("hospital_floor_1", 19, 5, "item", "potion_heal"),
-    ("hospital_floor_1", 45, 5, "item", "potion_sanity"),
-    ("hospital_floor_1", 15, 6, "item", "item_knife"),
-    ("hospital_floor_2", 30, 2, "item", "potion_heal"),
-    ("hospital_floor_2", 40, 6, "item", "letter_1"),
     ("hospital_floor_2", 8, 6, "character", "archivist_klara"),
-    ("hospital_floor_2", 6, 4, "item", "note_case"),
     ("hospital_basement", 28, 2, "character", "shadow_enemy"),
     ("hospital_basement", 44, 2, "character", "shadow_enemy"),
-    ("hospital_basement", 43, 6, "item", "document_1"),
 ]
 
 
@@ -744,10 +715,16 @@ def _apply_phase3(conn) -> None:
         """DELETE FROM map_connections
            WHERE source_map_id = ? AND source_x = ? AND source_y = ?""",
         [
+            ("street_outside", 0, 9),
             ("street_outside", 0, 10),
+            ("street_outside", 26, 3),
             ("street_outside", 26, 6),
+            ("street_outside", 32, 6),
+            ("street_outside", 33, 6),
             ("street_traktir", 0, 7),
             ("street_traktir", 0, 8),
+            ("street_traktir", 35, 7),
+            ("street_traktir", 35, 8),
         ],
     )
     conn.executemany(
@@ -756,14 +733,24 @@ def _apply_phase3(conn) -> None:
             target_map_id, target_x, target_y, description)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
         [
+            ("street_outside", "entrance", 0, 9, "hospital_floor_1", 54, 1,
+             "Вернуться в клинику"),
             ("street_outside", "entrance", 0, 10, "hospital_floor_1", 54, 1,
              "Вернуться в клинику"),
-            ("street_outside", "entrance", 26, 6, "street_traktir", 1, 7,
+            ("street_outside", "entrance", 32, 6, "street_traktir", 1, 7,
              "Войти в трактир"),
-            ("street_traktir", "exit", 0, 7, "street_outside", 26, 7,
+            ("street_outside", "entrance", 33, 6, "street_traktir", 1, 7,
+             "Войти в трактир"),
+            ("street_outside", "entrance", 26, 3, "street_traktir", 34, 7,
+             "Чёрный ход в трактир"),
+            ("street_traktir", "exit", 0, 7, "street_outside", 32, 7,
              "Выйти на набережную"),
-            ("street_traktir", "exit", 0, 8, "street_outside", 26, 7,
+            ("street_traktir", "exit", 0, 8, "street_outside", 32, 7,
              "Выйти на набережную"),
+            ("street_traktir", "exit", 35, 7, "street_outside", 25, 3,
+             "Выйти во двор"),
+            ("street_traktir", "exit", 35, 8, "street_outside", 25, 3,
+             "Выйти во двор"),
         ],
     )
 
@@ -775,10 +762,16 @@ def _apply_phase3(conn) -> None:
              first_visit_text = excluded.first_visit_text,
              x1 = excluded.x1, y1 = excluded.y1, x2 = excluded.x2, y2 = excluded.y2""",
         [
-            ("st_tavern", "street_outside", 18, 1, 34, 6, "Трактир",
+            ("st_tavern", "street_outside", 26, 6, 40, 7, "Трактир",
              "Вывеска «У канала». Буквы кривые, как после удара.", 0),
-            ("tav_room", "street_traktir", 1, 1, 34, 12, "Зал",
+            ("st_yard", "street_outside", 12, 1, 25, 5, "Двор",
+             "Колодец двора. Окна чужих кухонь смотрят в одно небо.", -1),
+            ("tav_seni", "street_traktir", 1, 1, 5, 12, "Сени",
+             "Сени. С улицы ещё пахнет каналом, из зала — самоваром.", 0),
+            ("tav_room", "street_traktir", 6, 1, 25, 12, "Зал",
              "Самовар шумит, будто держит речь. Здесь ещё пьют за живых.", -1),
+            ("tav_kitchen", "street_traktir", 26, 1, 34, 12, "Кухня",
+             "Печь и чёрный ход. Двор ближе, чем вывеска.", -1),
             ("bred_hall", "hospital_bred", 13, 1, 55, 2, "Чужой коридор",
              "Лампа горит вчерашним светом. Шаги ваши уже прошли здесь без вас.", -8),
         ],
@@ -806,10 +799,8 @@ def _apply_phase3(conn) -> None:
         [
             ("street_outside", 8, 12, "character", "watchman_petrov"),
             ("street_outside", 47, 10, "character", "sennaya_beggar"),
-            ("street_outside", 15, 16, "item", "note_canal"),
-            ("street_traktir", 10, 5, "character", "innkeeper_semyon"),
+            ("street_traktir", 8, 4, "character", "innkeeper_semyon"),
             ("hospital_bred", 22, 10, "character", "shadow_enemy"),
-            ("hospital_bred", 16, 10, "item", "note_canal"),
         ],
     )
 
@@ -880,17 +871,19 @@ def _apply_phase3(conn) -> None:
         [
             (1, "npc", "Документы. Или ступайте обратно, в номер.", 0, 10, None, None, None),
             (10, "player", "Я болен. Меня выпустили.", 0, 20, 1, None, None),
-            (11, "player", "(признаться) Документов нет. И имени — тоже.", -6, 30, 1, "guilt_admitted", None),
+            (11, "player", "(признаться) Документов нет. И имени — тоже.", -6, 30, 1, None, None),
             (12, "player", "Не загораживайте.", 0, 40, 1, None, None),
             (13, "player", "Шинель в снегу, которого нет. Откуда вы?", 0, 50, 1, None, None, "class_seeker"),
             (14, "player", "Свисток молчит. Его кто-то держит за горло.", -2, 51, 1, None, None, "class_mystic"),
             (15, "player", "Уберите руку. Не просите дважды.", 0, 52, 1, None, None, "class_rebel"),
+            (16, "player", "Лизавете. Я прочёл это имя.", -4, 53, 1, "guilt_admitted", None, "knows_lizaveta"),
             (20, "npc", "Больных не выпускают. Беглецов — тоже. Выберите, кем быть.", -2, -1, None, "spoke_watchman", None),
-            (30, "npc", "Лизавете — честно. Туман любит тех, кто не врёт воде. Ступайте к нищему.", -4, -1, None, "spoke_watchman", None),
+            (30, "npc", "Пустые карманы — не протокол. Имя в архиве. Долг — в бумаге или в воде.", -4, -1, None, "spoke_watchman", None),
             (40, "npc", "Смелости у вас больше, чем права. Не попадайтесь второй раз.", 0, -1, None, "spoke_watchman", None),
             (50, "npc", "Снег был. Потом клиника. Потом я здесь без права уйти.", -2, -1, None, "spoke_watchman", None),
             (51, "npc", "Не свищу. Кто свистит ночью — тот уже не городовой.", -3, -1, None, "spoke_watchman", None),
             (52, "npc", "Идите. Плечо ваше я запомню.", 0, -1, None, "spoke_watchman", None),
+            (53, "npc", "Теперь в протоколе лицо. Фамилии вашей всё ещё нет.", -2, -1, None, "spoke_watchman", None),
         ],
         [
             (1, "npc", "Имя и долг. Свисток молчит. Проходите.", 0, 10, None, None, None, "has_both"),
@@ -899,17 +892,19 @@ def _apply_phase3(conn) -> None:
             (4, "npc", "Настасье должны выход. Фамилии нет. Беглецов без имени возвращают.", 0, 10, None, None, None, "nastasya_escape"),
             (5, "npc", "Всё те же карманы. Всё те же пустые.", 0, 10, None, None, None),
             (10, "player", "Пропустите к каналу.", 0, 20, 1, None, None),
-            (11, "player", "(признаться) Я бежал. И виноват.", -5, 30, 1, "guilt_admitted", None),
+            (11, "player", "(признаться) Я бежал. И виноват.", -5, 30, 1, None, None),
             (12, "player", "Где Сенная?", 0, 40, 1, None, None),
             (13, "player", "Я назвался. Пропустите.", 0, 50, 1, None, None, "has_name"),
             (14, "player", "Лизавете. Этого мало?", 0, 51, 1, None, None, "guilt_admitted"),
             (15, "player", "Настасье выход. Пропустите.", 0, 52, 1, None, None, "nastasya_escape"),
+            (16, "player", "Лизавете. Я прочёл это имя.", -4, 53, 1, "guilt_admitted", None, "knows_lizaveta"),
             (20, "npc", "Канал никого не пропускает. Он принимает.", -2, -1, None, None, None),
-            (30, "npc", "Лизавете — к нищему. Туман слушает тех, кто не врёт воде.", -3, -1, None, None, None),
+            (30, "npc", "Вина без лица — не протокол. Ищите бумагу. Или воду.", -3, -1, None, None, None),
             (40, "npc", "На восток, в вату. Без имени не ходите — фонари врут.", 0, -1, None, None, None),
             (50, "npc", "Мало. Свисток слушает два пункта. Вы назвали один.", 0, -1, None, None, None),
             (51, "npc", "Лизавете мало без имени. Побег в никуда.", 0, -1, None, None, None),
             (52, "npc", "Настасье — дверь. Вам — фамилия. Иначе номер.", 0, -1, None, None, None),
+            (53, "npc", "Лицо записано. Имени нет. Беглецов без фамилии возвращают.", 0, -1, None, None, None),
         ],
     )
     _seed_city_dialogue(
@@ -921,13 +916,15 @@ def _apply_phase3(conn) -> None:
             (1, "npc", "Имя, барин. Без имени туман — стена.", 0, 10, None, None, None),
             (10, "player", "Я не помню.", -2, 20, 1, None, None),
             (11, "player", "(назвать чужое) Иван.", 0, 30, 1, None, None),
-            (12, "player", "(отдать своё, какое есть)", -8, 40, 1, "sennaya_name", None),
+            (12, "player", "(отдать своё, какое есть)", -8, 40, 1, None, None),
             (13, "player", "На ладони след печати. Чья?", 0, 50, 1, None, None, "class_seeker"),
             (14, "player", "Туман зовёт уменьшительным. Не берите.", -4, 51, 1, None, None, "class_mystic"),
             (15, "player", "Имя не милостыня. Отойдите.", 0, 52, 1, None, None, "class_rebel"),
+            (16, "player", "Лизавете. Канал взял уменьшительное.", -4, 53, 1, "guilt_admitted", None, "knows_lizaveta"),
             (20, "npc", "Тогда стойте. Стена сытая.", -3, -1, None, "spoke_beggar", None),
             (30, "npc", "Иванов здесь полно. Туман их не считает.", -2, -1, None, "spoke_beggar", None),
-            (40, "npc", "Взял. Идите. Мостовая впереди уже не клиника.", -6, -1, None, "spoke_beggar", None),
+            (40, "npc", "Пустая ладонь. Имя без бумаги туман не считает. Архив — на втором.", -6, -1, None, "spoke_beggar", None),
+            (53, "npc", "Долг услышал. Имени нет. Стена ещё хочет подпись.", -3, -1, None, "spoke_beggar", None),
             (50, "npc", "Академии. Или клиники. Печать одна — руки разные.", -2, -1, None, "spoke_beggar", None),
             (51, "npc", "Правильно. Кто отзовётся — останется здесь без мостовой.", -5, -1, None, "spoke_beggar", None),
             (52, "npc", "Тогда стойте в вате. Стена любит гордых.", 0, -1, None, "spoke_beggar", None),
@@ -939,13 +936,15 @@ def _apply_phase3(conn) -> None:
             (4, "npc", "Настасье должны выход — и безымянны. Стена сытая.", 0, 10, None, None, None, "nastasya_escape"),
             (5, "npc", "Ещё раз. Имя или стена.", 0, 10, None, None, None),
             (10, "player", "Я всё так же не помню.", -2, 20, 1, None, None),
-            (11, "player", "(отдать то, что есть)", -6, 30, 1, "sennaya_name", None),
+            (11, "player", "(отдать то, что есть)", -6, 30, 1, None, None),
             (12, "player", "Я уже отдал.", 0, 40, 1, None, None),
             (13, "player", "Имя ваше. Долг — нет?", 0, 50, 1, None, None, "has_name"),
             (14, "player", "Лизавете. Этого мало?", 0, 51, 1, None, None, "guilt_admitted"),
             (15, "player", "Настасье выход. Этого мало?", 0, 52, 1, None, None, "nastasya_escape"),
+            (16, "player", "Лизавете. Я прочёл это имя.", -4, 53, 1, "guilt_admitted", None, "knows_lizaveta"),
             (20, "npc", "Тогда стойте. Стена терпеливая.", -2, -1, None, None, None),
-            (30, "npc", "Теперь идите — если есть, кому должны. Мостовая впереди уже не клиника.", -4, -1, None, None, None),
+            (30, "npc", "Без бумаги это Иван. Стена сытая.", -4, -1, None, None, None),
+            (53, "npc", "Долг услышал. Имени нет. Стена ещё хочет подпись.", -3, -1, None, None, None),
             (40, "npc", "Тогда зачем пришли? Туман не любит повторных подаяний.", 0, -1, None, None, None),
             (50, "npc", "Мало. Стена слушает два слова. Вы сказали одно.", 0, -1, None, None, None),
             (51, "npc", "Лизавете мало без имени. Милостыня пустая.", 0, -1, None, None, None),
@@ -1242,6 +1241,76 @@ def _apply_phase11(conn) -> None:
             "Пациент N. Пробуждение без имени. На полях чужое: Лизавета. "
             "Не выпускать на Сенную, пока не подпишет себя и не вспомнит, кому должен.",
         ),
+    )
+
+
+CONTAINER_LOOT: List[Tuple[str, int, int, str]] = [
+    ("hospital_floor_1", 1, 1, "diary_1"),
+    ("hospital_floor_1", 3, 1, "key_doctor"),
+    ("hospital_floor_1", 12, 1, "note_1"),
+    ("hospital_floor_1", 1, 5, "diary_2"),
+    ("hospital_floor_1", 14, 5, "key_warden"),
+    ("hospital_floor_1", 1, 7, "key_basement"),
+    ("hospital_floor_1", 41, 4, "diary_3"),
+    ("hospital_floor_1", 42, 4, "potion_heal"),
+    ("hospital_floor_1", 38, 5, "item_knife"),
+    ("hospital_floor_1", 40, 7, "potion_sanity"),
+    ("hospital_floor_2", 1, 1, "note_case"),
+    ("hospital_floor_2", 3, 1, "potion_heal"),
+    ("hospital_floor_2", 34, 5, "letter_1"),
+    ("hospital_floor_2", 16, 1, "note_2"),
+    ("hospital_basement", 39, 5, "document_1"),
+    ("street_outside", 18, 15, "note_canal"),
+]
+
+
+def _apply_phase12(conn) -> None:
+    """Лут в мебели. Записки снова правда. С пола — вон."""
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS container_loot (
+            map_id TEXT NOT NULL,
+            x INTEGER NOT NULL,
+            y INTEGER NOT NULL,
+            item_id TEXT NOT NULL,
+            PRIMARY KEY (map_id, x, y)
+        );
+        """
+    )
+    conn.execute("DELETE FROM container_loot")
+    conn.executemany(
+        "INSERT INTO container_loot (map_id, x, y, item_id) VALUES (?, ?, ?, ?)",
+        CONTAINER_LOOT,
+    )
+    conn.execute("DELETE FROM map_placements WHERE spawn_type = 'item'")
+    conn.executemany(
+        "UPDATE items SET content = ? WHERE id = ?",
+        [
+            (
+                "Портрет без глаз. На раме ногтем: Лизавета. Не академия писала.",
+                "note_1",
+            ),
+            (
+                "Подвал кормит тех, кто закрыл глаза. Ключ от палат носят на поясе.",
+                "note_2",
+            ),
+            (
+                "Ключ от кабинета кладут в стол, не в карман. Немец пишет ночами.",
+                "diary_1",
+            ),
+            (
+                "В архиве на втором папка без обложки. Подпишите — или останетесь номером.",
+                "diary_2",
+            ),
+            (
+                "На Сенной просят имя. Туман слушает бумагу, не крик.",
+                "diary_3",
+            ),
+            (
+                "Препарат не лечит. Он стирает. На полях: не выпускать к каналу.",
+                "document_1",
+            ),
+        ],
     )
 
 

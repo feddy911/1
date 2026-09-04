@@ -3,9 +3,17 @@ import json
 from typing import List, Optional, Set
 
 
-# Имя — назвал себя. Долг — кому должен. Туман слышит только оба.
-NAME_FLAGS = frozenset({"archive_name", "sennaya_name"})
+# Имя — подпись в архиве. Долг — бумага, признание в клинике, Настасья.
+# Улица проверяет оба, не выдаёт.
+NAME_FLAGS = frozenset({"archive_name"})
 DEBT_FLAGS = frozenset({"guilt_admitted", "nastasya_escape"})
+
+# Первое чтение. Не SAN ради SAN: бумага возвращает правду.
+NOTE_TRUTH = {
+    "note_canal": ("guilt_admitted", "knows_lizaveta"),
+    "note_case": ("knows_lizaveta",),
+    "note_1": ("knows_lizaveta",),
+}
 
 
 def has_name(flags: Optional[Set[str]] = None) -> bool:

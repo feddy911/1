@@ -41,6 +41,7 @@ TILE_INKS: Dict[str, Tuple[str, str, str]] = {
     "C": ("ochre", "wood", "Стул"),
     "H": ("ochre", "wood", "Шкаф"),
     "O": ("ochre", "wood", "Письменный стол"),
+    '"': ("paper", "graphite", "Картина"),
     "E": ("frost", "ice", "Выход"),
     "S": ("frost", "ice", "Лестница вверх"),
     "s": ("frost", "canal", "Лестница вниз"),

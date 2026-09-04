@@ -240,7 +240,7 @@ class DBLoader:
         except:
             # Дефолтные значения если таблицы нет
             return {
-                '#': 1, ' ': 1, 'd': 1, 'H': 1, 'O': 1,
+                '#': 1, ' ': 1, 'd': 1, 'H': 1, 'O': 1, '"': 1,
                 '.': 0, 'D': 0, "'": 0, 'W': 0, 'S': 0, 's': 0, 'E': 0,
                 '*': 0, '!': 0, ')': 0, '~': 0, '&': 0, '@': 0,
                 'k': 0, 'P': 0, 'B': 0, 'T': 0, 'C': 0,
@@ -341,4 +341,16 @@ class DBLoader:
                LIMIT 1""",
             (map_id, x, x, y, y),
         ).fetchone()
+        return dict(row) if row else None
+
+    def get_container_loot(self, map_id: str, x: int, y: int) -> Optional[Dict]:
+        """Предмет в мебели. Нет ряда — пустой обыск."""
+        try:
+            row = self.conn.execute(
+                """SELECT * FROM container_loot
+                   WHERE map_id = ? AND x = ? AND y = ?""",
+                (map_id, x, y),
+            ).fetchone()
+        except sqlite3.OperationalError:
+            return None
         return dict(row) if row else None

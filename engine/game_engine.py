@@ -21,15 +21,24 @@ from engine.constants import (
     NOTE_POSTSCRIPTS,
     SCREEN_HEIGHT,
     SCREEN_WIDTH,
+    SEARCHABLE_TILES,
     TILE_BUMP_MESSAGES,
     TRANSITION_TILES,
     WALKABLE_TILES,
 )
 from engine.db_loader import DBLoader
 from engine.dialogue_engine import DialogueEngine
+from engine.dialogue_keys import choice_index_from_key
 from engine.entity_factory import Character, EntityFactory, Player
 from engine.fov_system import FOVSystem
-from engine.quest_system import QuestSystem, can_pass_fog, debt_face, has_debt, has_name
+from engine.quest_system import (
+    NOTE_TRUTH,
+    QuestSystem,
+    can_pass_fog,
+    debt_face,
+    has_debt,
+    has_name,
+)
 from engine.renderer import Renderer
 from engine.sanity_system import SanSystem
 from engine.save_system import has_save, read_save, restore_map_states, write_save
@@ -475,10 +484,9 @@ class GameEngine:
 
             spawn_type = placement['spawn_type']
             spawn_id = placement['spawn_id']
-            if spawn_type == 'character':
-                entity = self.entity_factory.create_character(spawn_id)
-            else:
-                entity = self.entity_factory.create_item(spawn_id)
+            if spawn_type != 'character':
+                continue
+            entity = self.entity_factory.create_character(spawn_id)
             if not entity:
                 continue
             entity.x = x
@@ -875,11 +883,12 @@ class GameEngine:
 
     def _handle_dialogue(self, event) -> bool:
         name = getattr(event.sym, "name", "") or ""
-        choice_index = {
-            "N1": 0, "N2": 1, "N3": 2, "N4": 3,
-            "KP_1": 0, "KP_2": 1, "KP_3": 2, "KP_4": 3,
-        }.get(name)
-        if choice_index is not None and self.current_dialogue_choices:
+        choice_index = choice_index_from_key(name)
+        if (
+            choice_index is not None
+            and self.current_dialogue_choices
+            and 0 <= choice_index < len(self.current_dialogue_choices)
+        ):
             kind, text = self.dialogue_engine.choose(choice_index)
             self._apply_dialogue_view(kind, text)
             return True
@@ -918,8 +927,6 @@ class GameEngine:
         tile = self.current_map[new_y][new_x]
 
         if tile in BLOCKING_TILES:
-            if self._maybe_study_desk(new_x, new_y, tile):
-                return
             message = TILE_BUMP_MESSAGES.get(tile)
             if message:
                 self._bump_message(new_x, new_y, message)
@@ -1127,6 +1134,9 @@ class GameEngine:
                     self.add_message(f"{entity.name} не желает разговаривать.")
                 return
 
+        if self._try_search():
+            return
+
         self.add_message("Рядом никого нет.")
 
     def _apply_dialogue_result(self, result: Optional[dict]):
@@ -1215,30 +1225,52 @@ class GameEngine:
         if content:
             self.add_message(content)
 
-    def _maybe_study_desk(self, x: int, y: int, tile: str) -> bool:
-        """Пустой кабинет 2-го этажа отвечает бюро. Карту не двигаем."""
-        if tile != 'O' or self.current_map_id != 'hospital_floor_2':
-            return False
-        if 'study_desk' in self.flags:
-            return False
-        region = self.db.get_region_at(self.current_map_id, x, y)
-        if not region or region['id'] != 'f2_study':
-            return False
-        self.flags.add('study_desk')
-        self.add_message(
-            "Бюро. Под прессом черновик: «Пациент вспоминает. Нельзя.» "
-            "Почерк тот же, что внизу, у микстуры."
-        )
-        extra = {
-            'seeker': "Дата на полях — сегодняшняя. Имени нет.",
-            'mystic': "Бумага ещё тёплая, будто только что отняли руку.",
-            'rebel': "Можно скомкать. Вы не комкаете — пока.",
-        }.get(getattr(self.player, 'id', ''))
-        if getattr(self.player, 'id', '') == 'seeker':
-            self.flags.add('seeker_trace')
-        if extra:
-            self.add_message(extra)
-        return True
+    def _try_search(self) -> bool:
+        """Обыск стола, шкафа, бюро, картины. e, не шаг."""
+        for dx, dy in ((0, -1), (0, 1), (-1, 0), (1, 0), (0, 0)):
+            x, y = self.player.x + dx, self.player.y + dy
+            if not (0 <= y < len(self.current_map) and 0 <= x < len(self.current_map[0])):
+                continue
+            if self.current_map[y][x] in SEARCHABLE_TILES:
+                self._search_container(x, y)
+                return True
+        return False
+
+    def _search_container(self, x: int, y: int):
+        tile = self.current_map[y][x]
+        flag = f"searched:{self.current_map_id}:{x}:{y}"
+        if flag in self.flags:
+            self.add_message("Уже смотрели. Пыль легла обратно.")
+            return
+        self.flags.add(flag)
+        loot = self.db.get_container_loot(self.current_map_id, x, y)
+        names = {
+            "T": "Стол",
+            "H": "Шкаф",
+            "O": "Бюро",
+            '"': "Рама",
+        }
+        label = names.get(tile, "Мебель")
+        if not loot:
+            self.add_message(f"{label}. Ничего, кроме пыли.")
+            return
+        item = self.entity_factory.create_item(loot["item_id"])
+        if not item:
+            self.add_message(f"{label}. Пусто.")
+            return
+        self.add_message(f"{label}. Нащупали.")
+        if getattr(item, "type", "") == "note":
+            self._read_note(item)
+        else:
+            self.player.inventory.append(item)
+            self.add_message(f"Взяли: {item.name}")
+            self._refresh_player_weapon()
+        if (
+            self.current_map_id == "hospital_floor_2"
+            and (x, y) == (34, 5)
+            and getattr(self.player, "id", "") == "seeker"
+        ):
+            self.flags.add("seeker_trace")
 
     def _read_note(self, note):
         """Прочитать записку как показание."""
@@ -1257,6 +1289,13 @@ class GameEngine:
             if not content:
                 content = getattr(note, 'content', '') or getattr(note, 'description', '')
             self._present_testimony(note.name, content or "Чернила выцвели.")
+            for truth in NOTE_TRUTH.get(note.id, ()):
+                if truth not in self.flags:
+                    self.flags.add(truth)
+                    if truth == "guilt_admitted":
+                        self.add_message("Вы вспомнили, кому должны.")
+                    elif truth == "knows_lizaveta":
+                        self.add_message("Имя на полях — не ваше. Его ещё можно сказать вслух.")
             sanity_damage = getattr(note, 'sanity_damage', 0) or 0
             if sanity_damage != 0:
                 self.player.change_san(sanity_damage)

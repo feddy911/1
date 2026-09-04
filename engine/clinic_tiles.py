@@ -566,6 +566,21 @@ def _canal() -> np.ndarray:
     return tile
 
 
+def _painting() -> np.ndarray:
+    """Рама на штукатурке. Не окно."""
+    tile = _wall()
+    for x in range(3, 13):
+        _stamp(tile, x, 4, 245)
+        _stamp(tile, x, 18, 245)
+    for y in range(4, 19):
+        _stamp(tile, 3, y, 245)
+        _stamp(tile, 12, y, 245)
+    for y in range(6, 17):
+        for x in range(5, 11):
+            _stamp(tile, x, y, 150 if (x + y) % 2 else 95)
+    return tile
+
+
 _PAINTERS = {
     "#": _wall,
     ".": _floor,
@@ -580,6 +595,7 @@ _PAINTERS = {
     "C": _chair,
     "H": _cabinet,
     "O": _desk,
+    '"': _painting,
     "W": _window,
     "S": _stairs_up,
     "s": _stairs_down,

@@ -227,8 +227,11 @@ if __name__ == "__main__":
     assert b[7][3] == "." and b[6][3] == "D", "дверь камеры должна открываться в коридор"
     assert s[9][0] == "E"
     assert s[9][1] == "."
-    assert s[6][26] == "E" and s[7][26] == "."
+    assert s[6][32] == "E" and s[7][32] == "."
+    assert s[6][12] == "." and s[5][12] == "."
     t = (ROOT / "traktir.txt").read_text(encoding="utf-8").splitlines()
     assert len(t) == 14 and all(len(row) == 36 for row in t)
     assert t[7][0] == "E"
+    assert t[7][35] == "E" and t[7][34] == "."
+    assert t[3][7] == "T"
     print("anchors OK (maps not overwritten)")
