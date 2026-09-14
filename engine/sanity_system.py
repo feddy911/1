@@ -1,95 +1,222 @@
-"""Система безумия (SAN)."""
+"""Система безумия (SAN) с динамическими эффектами."""
 import random
+from typing import List, Dict, Optional, Tuple
 
 
-# Сообщения только при росте hallucination_level (пороги 80 / 60 / 40 / 20).
-_LEVEL_EVENTS = {
-    1: [
-        "Зрение дрожит, как лампа в коридоре.",
-        "Кто-то шепчет за спиной — и смолкает, когда оборачиваетесь.",
-        "Края комнаты чуть дальше, чем стена.",
+# Таблица событий при потере рассудка (при переходе через порог вниз)
+_SAN_LOSS_EVENTS = {
+    80: [
+        "Вам кажется, что лампа мигнула чаще обычного.",
+        "Где-то капает вода. Или это кровь?",
+        "Вы слышите шаги, но они не ваши.",
     ],
-    2: [
-        "Тень исчезает, едва вы шагнете. След остаётся теплее воздуха.",
-        "В пустом коридоре называют вас — не по имени.",
-        "Стены ближе, чем план здания.",
+    60: [
+        "Стены дышат. Вдох — выдох.",
+        "Кто-то назвал вас чужим именем.",
+        "Отражение в окне моргнуло позже вас.",
     ],
-    3: [
-        "Вы видите проём, которого нет на стене.",
-        "Тени замахиваются — и проходят сквозь воздух.",
-        "Голоса в голове становятся громче шагов.",
+    40: [
+        "Двойник стоит в конце коридора. Он не двигается.",
+        "Голоса спорят о том, кто вы есть.",
+        "Пол стал мягче. Как плоть.",
     ],
-    4: [
-        "Отражение улыбается без вас.",
-        "Комнаты меняются местами. Выход помнит другой этаж.",
-        "Имя, которого не было, просят повторить.",
+    20: [
+        "Имя рассыпается. Вы не помните первую букву.",
+        "Коридор ведёт внутрь себя.",
+        "Тени отделились от стен. Они наблюдают.",
     ],
+}
+
+# Эффекты для каждого уровня галлюцинаций
+_HALLUCINATION_EFFECTS = {
+    0: {
+        'visual': None,
+        'sound': None,
+        'control': None,
+        'combat_penalty': 0,
+        'description': "Ясно",
+    },
+    1: {
+        'visual': 'periphery_flicker',  # Мерцание по краям
+        'sound': 'whisper_soft',  # Тихий шёпот
+        'control': None,
+        'combat_penalty': 0,
+        'description': "Зрение дрожит, как лампа в коридоре",
+    },
+    2: {
+        'visual': 'periphery_warp',  # Искажение периферии
+        'sound': 'whisper_medium',  # Отчётливый шёпот
+        'control': 'delay_50ms',  # Задержка ввода 50мс
+        'combat_penalty': -1,
+        'description': "Стены ближе, чем план здания",
+    },
+    3: {
+        'visual': 'center_distort',  # Искажение центра
+        'sound': 'voice_call',  # Голос зовёт
+        'control': 'invert_one_key',  # Одна клавиша инвертирована
+        'combat_penalty': -2,
+        'description': "Вы видите проём, которого нет на стене",
+    },
+    4: {
+        'visual': 'full_hallucinate',  # Полные галлюцинации
+        'sound': 'chaos_voices',  # Хаос голосов
+        'control': 'random_misinput',  # Случайные неверные ввода
+        'combat_penalty': -4,
+        'description': "Отражение улыбается без вас",
+    },
 }
 
 
 class SanSystem:
-    """Управление уровнем рассудка и галлюцинациями."""
+    """Управление уровнем рассудка, галлюцинациями и событиями безумия."""
 
     def __init__(self, player):
         self.player = player
         self.current_san = player.san
         self.last_san = player.san
         self.hallucination_level = self._calculate_hallucination_level()
-        self.san_events = []
+        self.san_events: List[str] = []
+        self.triggered_thresholds: set = set()  # Пороги, которые уже сработали
+        self.stabilization_bonus = 0  # Временный бонус от предметов/способностей
+        self.temp_san_loss = 0  # Временная потеря SAN (восстанавливается)
 
-    def update(self):
-        """Вернуть только новые события. Повторный вызов без смены SAN — пусто."""
+    def update(self) -> List[str]:
+        """Обновить состояние и вернуть новые события."""
         if self.current_san == self.player.san:
             return []
 
         old_level = self.hallucination_level
         self.last_san = self.current_san
         self.current_san = self.player.san
-        self.hallucination_level = self._calculate_hallucination_level()
+        new_level = self._calculate_hallucination_level()
+        
+        events = []
 
-        if self.hallucination_level <= old_level:
-            return []
+        # Проверка на переход через порог вниз (потеря SAN)
+        if new_level > old_level:
+            threshold = self._get_threshold_for_level(new_level)
+            if threshold and threshold not in self.triggered_thresholds:
+                event_text = self._get_san_loss_event(threshold)
+                if event_text:
+                    events.append(event_text)
+                    self.triggered_thresholds.add(threshold)
 
-        event = self._event_for_level(self.hallucination_level)
-        if event:
-            self.san_events.append(event)
-            return [event]
-        return []
+        # Проверка на восстановление через порог вверх (лечение SAN)
+        elif new_level < old_level:
+            threshold = self._get_threshold_for_level(old_level)
+            if threshold and threshold in self.triggered_thresholds:
+                self.triggered_thresholds.remove(threshold)
+                events.append("Голоса стихают. На мгновение.")
+
+        self.hallucination_level = new_level
+        self.san_events.extend(events)
+        return events
+
+    def lose_san(self, amount: int, source: str = "") -> List[str]:
+        """
+        Потерять рассудок. Возвращает события.
+        source: причина потери (для логов)
+        """
+        old_level = self.hallucination_level
+        self.player.lose_san(amount)
+        events = self.update()
+        
+        # Критическая потеря SAN (более 10 за раз)
+        if amount >= 10:
+            # Находим ближайший порог для выбора сообщения
+            current_san = self.player.san
+            if current_san > 60:
+                threshold = 80
+            elif current_san > 40:
+                threshold = 60
+            elif current_san > 20:
+                threshold = 40
+            else:
+                threshold = 20
+            
+            options = _SAN_LOSS_EVENTS.get(threshold, _SAN_LOSS_EVENTS[20])
+            crit_event = f"Внезапный ужас: {random.choice(options)}"
+            events.append(crit_event)
+        
+        return events
+
+    def gain_san(self, amount: int, source: str = "") -> List[str]:
+        """
+        Восстановить рассудок. Возвращает события.
+        """
+        old_level = self.hallucination_level
+        self.player.gain_san(amount)
+        events = self.update()
+        
+        if old_level > self.hallucination_level:
+            events.append("Рассудок возвращается... частично.")
+        
+        return events
+
+    def apply_stabilization(self, bonus: int, duration: int = 0):
+        """
+        Применить временную стабилизацию рассудка.
+        bonus: бонус к SAN (положительный)
+        duration: длительность в ходах (0 = постоянно до сброса)
+        """
+        self.stabilization_bonus = bonus
+        self.player.san = min(self.player.max_san, self.player.san + bonus)
+
+    def clear_stabilization(self):
+        """Сбросить временную стабилизацию."""
+        if self.stabilization_bonus > 0:
+            self.player.san = max(0, self.player.san - self.stabilization_bonus)
+        self.stabilization_bonus = 0
+
+    def get_combat_penalty(self) -> int:
+        """Получить штраф к бою от текущего уровня SAN."""
+        effects = _HALLUCINATION_EFFECTS.get(self.hallucination_level, {})
+        return effects.get('combat_penalty', 0)
+
+    def get_effects(self) -> dict:
+        """Получить все активные эффекты для рендера и логики."""
+        effects = _HALLUCINATION_EFFECTS.get(self.hallucination_level, {})
+        return {
+            'visual': effects.get('visual'),
+            'sound': effects.get('sound'),
+            'control': effects.get('control'),
+            'level': self.hallucination_level,
+            'san_percent': self.current_san,
+            'combat_penalty': self.get_combat_penalty(),
+            'description': effects.get('description', ''),
+            'stabilized': self.stabilization_bonus > 0,
+        }
 
     def _calculate_hallucination_level(self) -> int:
-        """Рассчитать уровень галлюцинаций."""
-        if self.current_san > 80:
+        """Рассчитать уровень галлюцинаций на основе текущего SAN."""
+        san = self.player.san
+        if san > 80:
             return 0
-        elif self.current_san > 60:
+        elif san > 60:
             return 1
-        elif self.current_san > 40:
+        elif san > 40:
             return 2
-        elif self.current_san > 20:
+        elif san > 20:
             return 3
         else:
             return 4
 
-    def _event_for_level(self, level: int) -> str:
-        options = _LEVEL_EVENTS.get(level)
+    def _get_threshold_for_level(self, level: int) -> Optional[int]:
+        """Получить порог SAN для уровня галлюцинаций."""
+        thresholds = {1: 80, 2: 60, 3: 40, 4: 20}
+        return thresholds.get(level)
+
+    def _get_san_loss_event(self, threshold: int) -> str:
+        """Получить событие потери рассудка для порога."""
+        options = _SAN_LOSS_EVENTS.get(threshold, [])
         if not options:
             return ""
         return random.choice(options)
 
-    def _check_san_event(self) -> str:
-        """Совместимость: текст для текущего уровня, без смены состояния."""
-        return self._event_for_level(self.hallucination_level)
+    def can_act_normally(self) -> bool:
+        """Проверить, может ли игрок действовать нормально (без помех)."""
+        return self.hallucination_level < 3
 
-    def get_sanity_effects(self) -> dict:
-        """Эффекты для рендера.
-
-        Карту не скремблируем и не гасим весь кадр: только край зрения.
-        control не инвертируем: молчащие клавиши уже принимали за поломку.
-        """
-        level = self.hallucination_level
-        return {
-            'visual': 'periphery' if level else None,
-            'level': level,
-            'sound': None,
-            'control': None,
-            'hallucinations': [],
-        }
+    def is_critical(self) -> bool:
+        """Проверить критическое состояние рассудка."""
+        return self.hallucination_level >= 4 or self.player.san <= 10

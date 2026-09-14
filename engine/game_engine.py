@@ -64,6 +64,7 @@ class GameState:
     CLASS_SELECTION = 'class_selection'
     PLAYING = 'playing'
     COMBAT = 'combat'
+    ABILITY_MENU = 'ability_menu'
     DIALOGUE = 'dialogue'
     GAME_OVER = 'game_over'
     ENDING = 'ending'
@@ -549,6 +550,8 @@ class GameEngine:
             return self._handle_playing(event)
         if self.state == GameState.COMBAT:
             return self._handle_combat(event)
+        if self.state == GameState.ABILITY_MENU:
+            return self._handle_ability_menu(event)
         if self.state == GameState.DIALOGUE:
             return self._handle_dialogue(event)
         if self.state == GameState.ENDING:
@@ -684,7 +687,7 @@ class GameEngine:
             self.inventory_selected_index = max(0, len(self.player.inventory))
 
     def _use_item(self, item):
-        """Использовать предмет."""
+        """Использовать предмет с интеграцией системы рассудка."""
         effect = getattr(item, 'use_effect', '') or ''
         item_type = getattr(item, 'type', '')
 
@@ -706,14 +709,34 @@ class GameEngine:
         ):
             restore = getattr(item, 'sanity_restore', 0)
             if restore > 0:
-                old_san = self.player.san
-                self.player.san = min(self.player.max_san, self.player.san + restore)
-                self.add_message(
-                    f"Вы используете '{item.name}'. Восстановлено {self.player.san - old_san} рассудка."
-                )
+                if self.san_system:
+                    events = self.san_system.gain_san(restore, source="item")
+                    for evt in events:
+                        self.add_message(evt)
+                else:
+                    old_san = self.player.san
+                    self.player.san = min(self.player.max_san, self.player.san + restore)
+                    self.add_message(
+                        f"Вы используете '{item.name}'. Восстановлено {self.player.san - old_san} рассудка."
+                    )
                 self.player.inventory.remove(item)
             else:
                 self.add_message("Предмет не оказывает эффекта.")
+            return
+
+        if effect == 'stabilize_sanity':
+            # Предметы временной стабилизации рассудка
+            bonus = getattr(item, 'sanity_effect', 5)
+            duration = getattr(item, 'duration', 0)
+            if self.san_system:
+                self.san_system.apply_stabilization(bonus, duration)
+                self.add_message(f"'{item.name}' стабилизирует рассудок (+{bonus}).")
+                self.player.inventory.remove(item)
+            else:
+                old_san = self.player.san
+                self.player.san = min(self.player.max_san, self.player.san + bonus)
+                self.add_message(f"'{item.name}' восстанавливает {bonus} рассудка.")
+                self.player.inventory.remove(item)
             return
 
         if effect == 'unlock_door' or item_type == 'key':
@@ -803,8 +826,19 @@ class GameEngine:
 
         if event.sym in (tcod.event.KeySym.SPACE, tcod.event.KeySym.RETURN):
             if self.current_enemy:
-                _hit, _damage, message = perform_attack(self.player, self.current_enemy)
+                # Получаем штраф от рассудка
+                san_penalty = 0
+                if self.san_system:
+                    san_penalty = self.san_system.get_combat_penalty()
+                
+                _hit, _damage, message = perform_attack(
+                    self.player, self.current_enemy, san_penalty=san_penalty
+                )
                 self.add_message(message)
+                
+                # Обновляем эффекты игрока после атаки
+                self.player.update_effects()
+                
                 if not self.current_enemy.is_alive():
                     self.add_message(f"{self.current_enemy.name} погибает!")
                     if self.current_enemy in self.entities:
@@ -821,10 +855,22 @@ class GameEngine:
                     )
                     san_hit = getattr(self.current_enemy, 'sanity_damage', 0) or 0
                     if san_hit:
-                        self.player.change_san(-abs(san_hit))
+                        if self.san_system:
+                            events = self.san_system.lose_san(abs(san_hit), source="combat")
+                            for evt in events:
+                                self.add_message(evt)
+                        else:
+                            self.player.change_san(-abs(san_hit))
                     if not self.player.is_alive():
                         self.state = GameState.GAME_OVER
                         self.add_message("Вы погибли...")
+            return True
+        
+        if event.sym == tcod.event.KeySym.C:
+            # Открыть меню способностей в бою
+            if self.current_enemy and self.player:
+                self.state = GameState.ABILITY_MENU
+                self.selected_ability_index = 0
             return True
 
         if event.sym == tcod.event.KeySym.F5:
@@ -840,7 +886,57 @@ class GameEngine:
             tcod.event.KeySym.H, tcod.event.KeySym.J,
             tcod.event.KeySym.K, tcod.event.KeySym.L,
         ):
-            self.add_message("Вы в бою. Пробел — удар, Esc — бежать.")
+            self.add_message("Вы в бою. Пробел — удар, C — способности, Esc — бежать.")
+        return True
+
+    def _handle_ability_menu(self, event) -> bool:
+        """Обработка ввода в меню способностей."""
+        # Навигация по списку способностей (пока только одна способность у класса)
+        if event.sym in (tcod.event.KeySym.UP, tcod.event.KeySym.K):
+            self.selected_ability_index = max(0, self.selected_ability_index - 1)
+            return True
+        if event.sym in (tcod.event.KeySym.DOWN, tcod.event.KeySym.J):
+            # Пока только одна способность, но оставляем на будущее
+            self.selected_ability_index = min(0, self.selected_ability_index + 1)
+            return True
+        
+        # Выбор способности
+        if event.sym in (tcod.event.KeySym.SPACE, tcod.event.KeySym.RETURN):
+            if self.player:
+                success, msg = self.player.use_class_ability(self.san_system)
+                self.add_message(msg)
+                if success:
+                    # Способность использована, теперь ход врага
+                    if self.current_enemy and self._is_hostile(self.current_enemy):
+                        _eh, _ed, enemy_msg = perform_attack(self.current_enemy, self.player)
+                        self.add_message(enemy_msg)
+                        self.add_message(
+                            f"Враг HP: {self.current_enemy.hp}/{self.current_enemy.max_hp}"
+                        )
+                        san_hit = getattr(self.current_enemy, 'sanity_damage', 0) or 0
+                        if san_hit:
+                            if self.san_system:
+                                events = self.san_system.lose_san(abs(san_hit), source="combat")
+                                for evt in events:
+                                    self.add_message(evt)
+                            else:
+                                self.player.change_san(-abs(san_hit))
+                        if not self.player.is_alive():
+                            self.state = GameState.GAME_OVER
+                            self.add_message("Вы погибли...")
+                    else:
+                        # Врага нет, возвращаемся в обычный режим
+                        self.state = GameState.PLAYING
+                else:
+                    # Не удалось использовать, остаемся в меню
+                    pass
+            return True
+        
+        # Отмена
+        if event.sym == tcod.event.KeySym.ESCAPE:
+            self.state = GameState.COMBAT
+            return True
+        
         return True
 
     def _dialogue_repeat_id(self, dialogue_id: str) -> str:
@@ -1448,6 +1544,9 @@ class GameEngine:
                 self.current_dialogue_choices,
                 self.current_dialogue_portrait,
             )
+
+        if self.state == GameState.ABILITY_MENU and self.player:
+            self.renderer.draw_ability_menu(self.player, self.selected_ability_index)
 
         if self.showing_help:
             self.renderer.draw_help()

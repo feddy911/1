@@ -1,4 +1,4 @@
-"""Боевая система на основе d20."""
+"""Боевая система на основе d20 с учётом рассудка."""
 import random
 from typing import Tuple, Optional
 from engine.entity_factory import Character, Player, Item
@@ -26,18 +26,29 @@ def roll_damage(damage_die: str) -> int:
         return 0
 
 
-def calculate_attack_bonus(attacker) -> int:
-    """Рассчитать бонус атаки."""
+def calculate_attack_bonus(attacker, san_penalty: int = 0) -> int:
+    """
+    Рассчитать бонус атаки с учётом штрафа рассудка.
+    
+    Args:
+        attacker: Атакующий
+        san_penalty: Штраф от системы рассудка (отрицательное число)
+    """
     # Базовый бонус из характеристик
+    base_bonus = 0
     if hasattr(attacker, 'attack_bonus'):
-        return attacker.attack_bonus
-    
-    # Если нет attack_bonus, используем STR или DEX
-    if hasattr(attacker, 'stats'):
+        base_bonus = attacker.attack_bonus
+    elif hasattr(attacker, 'stats'):
         str_mod = (attacker.stats.get('STR', 10) - 10) // 2
-        return str_mod
+        base_bonus = str_mod
     
-    return 0
+    # Применяем штраф рассудка (только для игрока)
+    if isinstance(attacker, Player):
+        final_bonus = base_bonus + san_penalty
+        # Штраф не может снизить бонус ниже -5
+        return max(-5, final_bonus)
+    
+    return base_bonus
 
 
 def calculate_armor_class(defender) -> int:
@@ -53,10 +64,18 @@ def calculate_armor_class(defender) -> int:
     return 10
 
 
-def perform_attack(attacker, defender) -> Tuple[bool, int, str]:
+def perform_attack(attacker, defender, san_penalty: int = 0, use_ability: bool = False) -> Tuple[bool, int, str]:
     """
-    Выполнить атаку.
-    Возвращает: (попало, урон, сообщение)
+    Выполнить атаку с учётом штрафа рассудка и способностей.
+    
+    Args:
+        attacker: Атакующий
+        defender: Защитник
+        san_penalty: Штраф к броску атаки от рассудка (0 или отрицательное)
+        use_ability: Использовать ли способность класса (для игрока)
+    
+    Returns:
+        (попало, урон, сообщение)
     """
     # Получаем имя атакующего
     attacker_name = getattr(attacker, 'name', 'Неизвестный')
@@ -66,9 +85,19 @@ def perform_attack(attacker, defender) -> Tuple[bool, int, str]:
     # Получаем имя защитника
     defender_name = getattr(defender, 'name', 'Неизвестный')
     
+    # Проверка способности критического удара
+    is_crit_from_ability = False
+    damage_bonus = 0
+    
+    if isinstance(attacker, Player) and hasattr(attacker, 'consume_next_crit'):
+        is_crit_from_ability = attacker.consume_next_crit()
+    
+    if isinstance(attacker, Player) and hasattr(attacker, 'get_damage_bonus'):
+        damage_bonus = attacker.get_damage_bonus()
+    
     # Бросок атаки
     attack_roll = roll_d20()
-    attack_bonus = calculate_attack_bonus(attacker)
+    attack_bonus = calculate_attack_bonus(attacker, san_penalty)
     total_attack = attack_roll + attack_bonus
     
     # Класс брони цели
@@ -79,12 +108,22 @@ def perform_attack(attacker, defender) -> Tuple[bool, int, str]:
         # Попали! Считаем урон
         damage = roll_damage(getattr(attacker, 'damage_die', '1d6'))
         
-        # Критический удар (натуральная 20)
-        if attack_roll == 20:
+        # Добавляем бонус от способностей
+        damage += damage_bonus
+        
+        # Критический удар (натуральная 20 или от способности)
+        if attack_roll == 20 or is_crit_from_ability:
             damage *= 2
-            message = f"КРИТИЧЕСКИЙ УДАР! {attacker_name} наносит {damage} урона!"
+            crit_source = " (способность)" if is_crit_from_ability else ""
+            message = f"КРИТИЧЕСКИЙ УДАР{crit_source}! {attacker_name} наносит {damage} урона!"
         else:
-            message = f"{attacker_name} попадает и наносит {damage} урона."
+            # Добавляем информацию о штрафе, если он был
+            if san_penalty < 0:
+                message = f"{attacker_name} попадает (со штрафом {san_penalty}) и наносит {damage} урона."
+            elif damage_bonus > 0:
+                message = f"{attacker_name} попадает (+{damage_bonus} от способности) и наносит {damage} урона."
+            else:
+                message = f"{attacker_name} попадает и наносит {damage} урона."
         
         # Применяем урон
         if hasattr(defender, 'take_damage'):
@@ -96,9 +135,11 @@ def perform_attack(attacker, defender) -> Tuple[bool, int, str]:
         if attack_roll == 1:
             message = f"{attacker_name} проваливает атаку (натуральная 1)!"
         else:
-            message = f"{attacker_name} промахивается (AC {armor_class})."
+            reason = f"(штраф рассудка {san_penalty})" if san_penalty < 0 else ""
+            message = f"{attacker_name} промахивается {reason}(AC {armor_class})."
         
         return False, 0, message
+
 
 def is_hostile(entity1, entity2) -> bool:
     """Проверить, враждебны ли сущности друг другу."""
@@ -114,3 +155,32 @@ def is_hostile(entity1, entity2) -> bool:
         return entity1.faction != entity2.faction
     
     return False
+
+
+def calculate_damage_with_mods(base_damage: int, attacker=None, defender=None, 
+                                strength_mod: bool = True, san_penalty: int = 0) -> int:
+    """
+    Рассчитать итоговый урон с модификаторами.
+    
+    Args:
+        base_damage: Базовый урон
+        attacker: Атакующий (для STR модификатора)
+        defender: Защитник (для сопротивления)
+        strength_mod: Применять модификатор силы
+        san_penalty: Штраф от рассудка к урону
+    
+    Returns:
+        Итоговый урон (минимум 1 при попадании)
+    """
+    damage = base_damage
+    
+    # Модификатор силы атакующего
+    if strength_mod and attacker and hasattr(attacker, 'stats'):
+        str_mod = (attacker.stats.get('STR', 10) - 10) // 2
+        damage += max(0, str_mod)  # Только положительный модификатор
+    
+    # Штраф от рассудка
+    if san_penalty < 0:
+        damage = max(1, damage + san_penalty)  # Минимум 1 урон
+    
+    return damage

@@ -1,46 +1,46 @@
+```markdown
+# Database files
+*.db
+
 # Python
 __pycache__/
-*.py[cod]
-*$py.class
-*.so
+*.pyc
+*.pyo
+*.pyd
 .Python
 env/
 venv/
-ENV/
-build/
-develop-eggs/
-dist/
-downloads/
-eggs/
-.eggs/
-lib/
-lib64/
-parts/
-sdist/
-var/
-wheels/
-*.egg-info/
-.installed.cfg
-*.egg
+.venv/
+.ENV
+.python-version
+*.sqlite3
+*.sqlite3-journal
 
-# База данных (если не хочешь хранить в Git)
-# data/petersburg.db
-
-# Сохранения игр
-saves/
-data/saves/
-
-# Временные файлы
+# Logs
 *.log
-*.tmp
+
+# Coverage
+.coverage
+coverage/
+htmlcov/
+
+# Environment
+.env
+.env.local
+.env.*
+.venv
+venv/
 
 # IDE
-.idea/
 .vscode/
+.idea/
 *.swp
 *.swo
-*~
+*.tmp
 
-# OS
-.DS_Store
-Thumbs.db
+# Build and distribution
+dist/
+build/
+*.egg-info/
+.eggs/
+```
