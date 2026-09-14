@@ -546,6 +546,63 @@ class Renderer:
                 (3, box_y + 1, PORTRAIT_COLS, PORTRAIT_ROWS),
             )
 
+    def draw_ability_menu(self, player, selected_index: int = 0):
+        """Окно меню способностей в бою."""
+        if not player or not player.class_ability:
+            return
+        
+        ability = player.class_ability
+        box_width = 60
+        box_height = 12
+        box_x = (self.screen_width - box_width) // 2
+        box_y = (self.screen_height - box_height) // 2
+        
+        # Рисуем рамку
+        self.console.print(box_x, box_y, '┌' + '─' * (box_width - 2) + '┐', fg=COLOR_DIALOGUE)
+        for i in range(1, box_height - 1):
+            self.console.print(box_x, box_y + i, '│' + ' ' * (box_width - 2) + '│', fg=COLOR_DIALOGUE)
+        self.console.print(box_x, box_y + box_height - 1, '└' + '─' * (box_width - 2) + '┘', fg=COLOR_DIALOGUE)
+        
+        # Заголовок
+        title = "[ СПОСОБНОСТИ КЛАССА ]"
+        self.console.print(box_x + (box_width - len(title)) // 2, box_y, title, fg=COLOR_DIALOGUE)
+        
+        # Название способности
+        ability_name = ability.get('name', 'Неизвестная способность')
+        self.console.print(box_x + 2, box_y + 2, f"Название: {ability_name}", fg=libtcodpy.Color(255, 255, 150))
+        
+        # Описание
+        description = ability.get('description', 'Нет описания')
+        wrapped_desc = self._wrap_text(description, box_width - 6)
+        for i, line in enumerate(wrapped_desc[:4]):
+            self.console.print(box_x + 4, box_y + 4 + i, line, fg=COLOR_TEXT)
+        
+        # Стоимость SAN
+        san_cost = ability.get('san_cost', 0)
+        if san_cost > 0:
+            self.console.print(box_x + 4, box_y + 9, f"Стоимость: {san_cost} SAN", fg=libtcodpy.Color(200, 100, 100))
+        else:
+            self.console.print(box_x + 4, box_y + 9, "Стоимость: бесплатно", fg=libtcodpy.Color(150, 200, 150))
+        
+        # Эффект
+        effect_type = ability.get('type', '')
+        effect_map = {
+            'combat_buff': f"+{ability.get('damage_bonus', 0)} к урону на {ability.get('duration', 1)} ход(а)",
+            'critical_strike': "Следующий удар будет критическим",
+            'sanity_restore': f"+{ability.get('san_restore', 0)} SAN, иммунитет к безумию" if ability.get('madness_immunity') else f"+{ability.get('san_restore', 0)} SAN",
+        }
+        effect_text = effect_map.get(effect_type, "Неизвестный эффект")
+        self.console.print(box_x + 4, box_y + 10, f"Эффект: {effect_text}", fg=COLOR_TEXT)
+        
+        # Подсказки
+        hints = "[Space — использовать] [Esc — отмена]"
+        self.console.print(box_x + (box_width - len(hints)) // 2, box_y + box_height - 1, hints, fg=COLOR_DIALOGUE)
+        
+        # Текущий SAN игрока
+        san_info = f"Ваш SAN: {player.san}/{player.max_san}"
+        self.console.print(box_x + 4, box_y + box_height - 2, san_info, fg=COLOR_SANITY)
+
+
     def draw_ending(self, title: str, body: str):
         """Финальный экран новеллы."""
         for y in range(self.screen_height):
