@@ -1,19 +1,24 @@
 """Система диалогов с ветками выбора."""
 from typing import Optional, List, Dict, Tuple
 
-from engine.quest_system import enrich_flags
+from engine.quest_system import DEBT_FLAGS, NAME_FLAGS, enrich_flags
+from engine.rpg_system import SAN_SPEECH_CHARACTERS, SAN_SPEECH_FLAGS, roll_skill
+
+TRUTH_FLAGS = NAME_FLAGS | DEBT_FLAGS
 
 
 class DialogueState:
     """Состояние текущего диалога."""
 
-    def __init__(self, dialogue_data: Dict, flags=None, san: int = 100):
+    def __init__(self, dialogue_data: Dict, flags=None, san: int = 100, player=None):
         self.dialogue_id = dialogue_data['id']
         self.character_id = dialogue_data['character_id']
         self.lines = dialogue_data['lines']
         self.by_order = {line['order_num']: line for line in self.lines}
         self.flags = enrich_flags(flags)
         self.san = san
+        self.player = player
+        self._truths_held = TRUTH_FLAGS & set(self.flags)
         self.current_order = min(self.by_order) if self.by_order else 0
         self.finished = False
         self.sanity_change_total = 0
@@ -44,16 +49,32 @@ class DialogueState:
 
     def _apply(self, line: Dict):
         change = line.get('sanity_change') or 0
+        flag = line.get('sets_flag')
+        if self.character_id in SAN_SPEECH_CHARACTERS or flag in SAN_SPEECH_FLAGS:
+            change = 0
         self.sanity_change_total += change
         if line.get('gives_item_id'):
             self.items_given.append(line['gives_item_id'])
-        flag = line.get('sets_flag')
         if flag:
             self.flags_set.append(flag)
             self.flags.add(flag)
         ending = line.get('ending_id')
         if ending:
             self.ending_id = ending
+
+    def _skill_failed(self, line: Dict) -> bool:
+        """3d6 «Говорить». Нет игрока — старый путь. Правду не снимаем."""
+        skill_id = (line.get("skill_id") or "").strip()
+        if not skill_id or self.player is None:
+            return False
+        return not roll_skill(self.player, skill_id).success
+
+    def _choice_next(self, line: Dict, failed: bool):
+        if failed:
+            nxt = line.get("fail_next_order")
+            if nxt is not None and nxt != "":
+                return nxt
+        return line.get("next_order")
 
     def _format(self, line: Dict) -> str:
         prefix = {
@@ -138,10 +159,12 @@ class DialogueState:
         if index < 0 or index >= len(self.choices):
             return 'choices', None
         line = self.choices[index]
+        failed = self._skill_failed(line)
         self._apply(line)
+        self.flags |= self._truths_held
         self.last_text = self._format(line)
         self.choices = []
-        return self._goto(line.get('next_order'))
+        return self._goto(self._choice_next(line, failed))
 
 
 class DialogueEngine:
@@ -151,11 +174,13 @@ class DialogueEngine:
         self.db = db_loader
         self.current_dialogue: Optional[DialogueState] = None
 
-    def start_dialogue(self, dialogue_id: str, flags=None, san: int = 100) -> bool:
+    def start_dialogue(self, dialogue_id: str, flags=None, san: int = 100, player=None) -> bool:
         data = self.db.get_dialogue(dialogue_id)
         if not data or not data['lines']:
             return False
-        self.current_dialogue = DialogueState(data, flags=flags, san=san)
+        self.current_dialogue = DialogueState(
+            data, flags=flags, san=san, player=player
+        )
         return True
 
     def present(self) -> Tuple[str, Optional[str]]:

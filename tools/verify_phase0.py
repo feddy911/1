@@ -114,7 +114,11 @@ def main():
         "quit_and_save",
         "_present_testimony",
         "_try_search",
+        "_apply_san_event",
         "_handle_combat",
+        "_fight_strike",
+        "_fight_verb",
+        "_fight_flee",
     ):
         if name not in methods:
             errors.append(f"нет метода {name}")
@@ -145,6 +149,35 @@ def main():
         errors.append("у бунтаря пустой стартовый инвентарь")
     if players["rebel"].attack_bonus <= players["mystic"].attack_bonus:
         errors.append("бунтарь должен бить сильнее мистика")
+    skill_n = db.conn.execute("SELECT COUNT(*) AS n FROM class_skills").fetchone()["n"]
+    if skill_n != 24:
+        errors.append(f"навыков не 24: {skill_n}")
+    if players["seeker"].skills.get("search") != 12:
+        errors.append("искатель ищет не на 12")
+    if players["rebel"].skills.get("break") != 12:
+        errors.append("бунтарь ломает не на 12")
+    if players["mystic"].skills.get("hear") != 12:
+        errors.append("мистик слышит не на 12")
+    from engine.rpg_system import SKILL_IDS, SKILL_PHRASES, RollResult, skill_phrase
+
+    if len(SKILL_IDS) != 8:
+        errors.append(f"навыков не 8: {SKILL_IDS}")
+    if "talk" in SKILL_PHRASES:
+        errors.append("говорить звучит второй строкой лога")
+    for sid in ("search", "sneak", "hear", "break"):
+        pack = SKILL_PHRASES.get(sid)
+        if not pack or len(pack) != 4:
+            errors.append(f"нет четырёх фраз для {sid}")
+    hear_18 = RollResult(total=18, target=12, success=False, crit=False, fumble=True)
+    if "сбился" not in skill_phrase(hear_18, "hear").lower():
+        errors.append("фумбл слуха без «сбился»")
+    sneak_3 = RollResult(total=3, target=10, success=True, crit=True, fumble=False)
+    if "мимо" not in skill_phrase(sneak_3, "sneak").lower():
+        errors.append("крит красться без «мимо»")
+    if skill_phrase(sneak_3, "talk"):
+        errors.append("говорить имеет фразу таблицы")
+    if players["seeker"].stats.get("WILL") != 13:
+        errors.append("воля искателя не из SAN занятия")
     from engine.entity_factory import EntityFactory
     shadow = EntityFactory(db).create_character("shadow_enemy")
     if not shadow:
@@ -153,6 +186,87 @@ def main():
         hit, dmg, msg = ge_mod.perform_attack(players["seeker"], shadow)
         if not isinstance(msg, str) or not msg:
             errors.append(f"удар без сообщения: {hit} {dmg} {msg}")
+    from engine.renderer import Renderer
+    from engine.constants import SCREEN_HEIGHT, SCREEN_WIDTH
+
+    fight = Renderer(SCREEN_WIDTH, SCREEN_HEIGHT)
+
+    class _FightHost:
+        use_sprites = False
+        san_system = None
+        state = "combat"
+        messages = []
+        flags = set()
+        quest_system = None
+
+    fight.game_engine = _FightHost()
+    fight.draw_fight_scene(players["seeker"], shadow, ["КРИТИЧЕСКИЙ УДАР"])
+    fight.draw_hud(players["seeker"])
+    engine_src = (ROOT / "engine" / "game_engine.py").read_text(encoding="utf-8")
+    renderer_src = (ROOT / "engine" / "renderer.py").read_text(encoding="utf-8")
+    if "плоть" not in renderer_src or "воля" not in renderer_src:
+        errors.append("HUD не карта больного")
+    if "КАРМАН ХАЛАТА" not in renderer_src:
+        errors.append("карман всё ещё инвентарь")
+    if "на полях" not in renderer_src:
+        errors.append("нет полей легенды")
+    if "пробел — удар" in renderer_src or "C — способность" in renderer_src:
+        errors.append("кадр помнит старый бой")
+    if "ИНВЕНТАРЬ" in renderer_src:
+        errors.append("карман подписан как инвентарь")
+    if "Color(200, 180, 100)" in renderer_src:
+        errors.append("долг на карте золотом не из чернил")
+    if (ROOT / "engine" / "inventory.py").exists():
+        errors.append("мёртвый InventoryManager всё ещё в репо")
+    if "InventoryManager" in engine_src or "class InventoryManager" in renderer_src:
+        errors.append("InventoryManager ещё импортируют")
+    if "chart_marks" not in renderer_src:
+        errors.append("баффы не в карте больного")
+    if "temporary_buff" not in engine_src:
+        errors.append("бафф предмета не идёт в эффекты")
+    rebel = players["rebel"]
+    saved_fx, saved_san = list(rebel.active_effects), rebel.san
+    rage_ok, _rage_msg = rebel.use_class_ability()
+    if not rage_ok or "рука тяжелее" not in rebel.chart_marks():
+        errors.append(f"ярость не помечает дело: {rebel.chart_marks()}")
+    fight.draw_hud(rebel)
+    rebel.active_effects = saved_fx
+    rebel.san = saved_san
+    if "draw_fight_scene" not in engine_src:
+        errors.append("бой всё ещё рисует коридор")
+    if "def draw_fight_scene" not in renderer_src:
+        errors.append("нет сцены боя")
+    if "1  Удар · d20" not in renderer_src or "3  Бежать" not in renderer_src:
+        errors.append("нет рядов сцены")
+    if "self.state = GameState.ABILITY_MENU" in engine_src:
+        errors.append("C всё ещё открывает меню способности")
+    if "draw_ability_menu" in engine_src:
+        errors.append("бой всё ещё рисует меню способности")
+
+    from types import SimpleNamespace
+    from tcod import event as tcod_event
+    from engine.game_engine import GameState
+
+    if shadow:
+        foe = EntityFactory(db).create_character("shadow_enemy")
+        dummy = GameEngine.__new__(GameEngine)
+        dummy.player = players["seeker"]
+        dummy.current_enemy = foe
+        dummy.entities = [foe]
+        dummy.messages = []
+        dummy.state = GameState.COMBAT
+        dummy.san_system = None
+        dummy.player.x, dummy.player.y = 5, 5
+        foe.x, foe.y = 6, 5
+        dummy._handle_combat(SimpleNamespace(sym=tcod_event.KeySym.C))
+        if dummy.state == GameState.ABILITY_MENU:
+            errors.append("C открывает меню способности")
+        if dummy.state not in (
+            GameState.COMBAT,
+            GameState.PLAYING,
+            GameState.GAME_OVER,
+        ):
+            errors.append(f"после глагола состояние {dummy.state}")
 
     window = db.get_light_source("window")
     if not window or window["symbol"] != "W" or float(window["radius"]) < 1:
@@ -716,6 +830,86 @@ def main():
     else:
         errors.append("не стартует постовой")
 
+    import engine.rpg_system as rpg
+
+    old_talk = rpg.roll_3d6
+    try:
+        rpg.roll_3d6 = lambda: 18
+        held = {"archive_name", "guilt_admitted"}
+        de_lie = DialogueEngine(db)
+        if not de_lie.start_dialogue(
+            "dialogue_watchman_intro",
+            flags=set(held),
+            san=70,
+            player=players["seeker"],
+        ):
+            errors.append("не стартует постовой для кости речи")
+        else:
+            de_lie.present()
+            de_lie.advance()
+            choices = de_lie.get_choices()
+            idx = next((i for i, line in enumerate(choices) if "болен" in line.lower()), None)
+            if idx is None:
+                errors.append(f"нет лжи постовому: {choices}")
+            else:
+                _kind, text_lie = de_lie.choose(idx)
+                if "халат не документ" not in (text_lie or "").lower():
+                    errors.append(f"провал речи постовому не сменил ответ: {text_lie}")
+                state = de_lie.current_dialogue
+                if state and not held <= state.flags:
+                    errors.append(f"провал речи снял правду: {sorted(state.flags)}")
+                fin_lie = de_lie.finish()
+                gained = set(fin_lie.get("flags") or [])
+                if "archive_name" in gained or "guilt_admitted" in gained:
+                    errors.append(f"ложь постовому выдала правду: {fin_lie}")
+        de_ivan = DialogueEngine(db)
+        if not de_ivan.start_dialogue(
+            "dialogue_beggar_intro",
+            flags={"archive_name"},
+            san=70,
+            player=players["seeker"],
+        ):
+            errors.append("не стартует нищий для кости речи")
+        else:
+            de_ivan.present()
+            de_ivan.advance()
+            choices = de_ivan.get_choices()
+            idx = next((i for i, line in enumerate(choices) if "иван" in line.lower()), None)
+            if idx is None:
+                errors.append(f"нет чужого имени нищему: {choices}")
+            else:
+                _kind, text_ivan = de_ivan.choose(idx)
+                if "чужое имя" not in (text_ivan or "").lower():
+                    errors.append(f"провал Ивана не сменил ответ: {text_ivan}")
+                if (
+                    de_ivan.current_dialogue
+                    and "archive_name" not in de_ivan.current_dialogue.flags
+                ):
+                    errors.append("Иван снял имя архива")
+                fin_ivan = de_ivan.finish()
+                if "archive_name" in (fin_ivan.get("flags") or []):
+                    errors.append(f"Иван выдал archive_name: {fin_ivan}")
+        rpg.roll_3d6 = lambda: 3
+        de_ok = DialogueEngine(db)
+        if de_ok.start_dialogue(
+            "dialogue_watchman_intro",
+            flags=set(),
+            san=70,
+            player=players["seeker"],
+        ):
+            de_ok.present()
+            de_ok.advance()
+            choices = de_ok.get_choices()
+            idx = next((i for i, line in enumerate(choices) if "болен" in line.lower()), 0)
+            _kind, text_ok = de_ok.choose(idx)
+            if "больных не выпускают" not in (text_ok or "").lower():
+                errors.append(f"успех речи постовому сломан: {text_ok}")
+            de_ok.finish()
+        else:
+            errors.append("не стартует постовой для успеха речи")
+    finally:
+        rpg.roll_3d6 = old_talk
+
     from engine.dialogue_keys import MAX_DIALOGUE_CHOICES, choice_index_from_key
 
     if choice_index_from_key("N5") != 4 or choice_index_from_key("KP_5") != 4:
@@ -1033,6 +1227,138 @@ def main():
     if "Нащупали" not in cab and "ключ" not in cab.lower() and "дневник" not in cab.lower():
         errors.append(f"шкаф кабинета пуст при обыске: {cab}")
 
+    import engine.rpg_system as rpg
+
+    old_3d6 = rpg.roll_3d6
+    try:
+        rpg.roll_3d6 = lambda: 18
+        if engine.quest_system and "letter_1" in engine.quest_system.found_notes:
+            engine.quest_system.found_notes.remove("letter_1")
+        engine._load_map("hospital_floor_2")
+        for flag in list(engine.flags):
+            if str(flag).startswith("searched:hospital_floor_2:34:5"):
+                engine.flags.discard(flag)
+        engine.messages = []
+        engine._search_container(34, 5)
+        fumble_letter = " ".join(engine.messages)
+        if "Пациент вспоминает" not in fumble_letter:
+            errors.append(f"письмо теряется на 18: {fumble_letter}")
+        if engine.quest_system and "diary_1" in engine.quest_system.found_notes:
+            engine.quest_system.found_notes.remove("diary_1")
+        engine._load_map("hospital_floor_1")
+        for flag in list(engine.flags):
+            if str(flag).startswith("searched:hospital_floor_1:1:1"):
+                engine.flags.discard(flag)
+        engine.messages = []
+        engine._search_container(1, 1)
+        fumble_diary = " ".join(engine.messages)
+        if "Нащупали" not in fumble_diary and "дневник" not in fumble_diary.lower():
+            errors.append(f"дневник теряется на 18: {fumble_diary}")
+        for flag in list(engine.flags):
+            if str(flag).startswith("searched:hospital_floor_1:42:4"):
+                engine.flags.discard(flag)
+        potions_before = sum(1 for item in engine.player.inventory if item.id == "potion_heal")
+        engine.messages = []
+        engine._search_container(42, 4)
+        potions_after = sum(1 for item in engine.player.inventory if item.id == "potion_heal")
+        potion_text = " ".join(engine.messages)
+        if potions_after > potions_before:
+            errors.append(f"зелье нашлось на 18: {potion_text}")
+        if "searched:hospital_floor_1:42:4" not in engine.flags:
+            errors.append("провал обыска не помечает мебель")
+        for flag in list(engine.flags):
+            if str(flag).startswith("searched:hospital_floor_1:42:4"):
+                engine.flags.discard(flag)
+        rpg.roll_3d6 = lambda: 3
+        engine.messages = []
+        engine._search_container(42, 4)
+        crit_search = " ".join(engine.messages)
+        if "Почерк дрожит" in crit_search:
+            errors.append("крит обыска врёт про почерк")
+        if "шов" not in crit_search.lower():
+            errors.append(f"крит обыска без фразы: {crit_search}")
+        rpg.roll_3d6 = lambda: 3
+        amount, _phrase = rpg.san_loss_for("note_canal", engine.player)
+        if amount != 0:
+            errors.append(f"успех воли на канал теряет {amount}")
+        engine.flags.discard("san_checked:note_canal")
+        san_before = engine.player.san
+        engine._apply_san_event("note_canal")
+        if engine.player.san != san_before:
+            errors.append("успех воли всё равно снял SAN")
+
+        from engine.rpg_system import SAN_EVENTS
+        import inspect
+
+        for (paper_id,) in db.conn.execute(
+            "SELECT id FROM items WHERE type = 'note' AND IFNULL(sanity_damage, 0) != 0"
+        ):
+            if paper_id not in SAN_EVENTS:
+                errors.append(f"бумага {paper_id} не в таблице CoC")
+        for event_id in ("double", "guilt_admitted", "possessed"):
+            if event_id not in SAN_EVENTS:
+                errors.append(f"нет события {event_id} в таблице CoC")
+        if "sanity_damage" in inspect.getsource(GameEngine._read_note):
+            errors.append("бумага всё ещё плюсует поле предмета")
+        if "change_san" in inspect.getsource(GameEngine._try_attack):
+            errors.append("удар по двойнику бьёт SAN вне таблицы")
+        if "sanity_damage" not in inspect.getsource(GameEngine._enemy_riposte):
+            errors.append("бой потерял SAN удара врага")
+
+        engine.flags.discard("san_checked:diary_1")
+        if engine.quest_system and "diary_1" in engine.quest_system.found_notes:
+            engine.quest_system.found_notes.remove("diary_1")
+        engine.player.san = 80
+        diary = engine.entity_factory.create_item("diary_1")
+        if diary:
+            engine._read_note(diary)
+            if engine.player.san == 75:
+                errors.append("дневник плюсует поле предмета к таблице")
+            if engine.player.san != 80:
+                errors.append(f"дневник при успехе воли: {engine.player.san}")
+
+        engine.flags.discard("guilt_admitted")
+        engine.flags.discard("san_checked:guilt_admitted")
+        engine.player.san = 80
+        engine._apply_dialogue_result(
+            {
+                "sanity_change": -8,
+                "flags": ["guilt_admitted"],
+                "items_given": [],
+                "ending_id": None,
+            }
+        )
+        if engine.player.san == 72:
+            errors.append("признание плюсует строку диалога к таблице")
+        if engine.player.san != 79:
+            errors.append(f"признание при успехе воли: {engine.player.san}")
+
+        engine.flags.discard("spoke_possessed")
+        engine.flags.discard("san_checked:possessed")
+        engine.player.san = 80
+        engine._apply_dialogue_result(
+            {
+                "sanity_change": -12,
+                "flags": ["spoke_possessed"],
+                "items_given": [],
+                "ending_id": None,
+            }
+        )
+        if engine.player.san != 79:
+            errors.append(f"одержимый плюсует реплики: {engine.player.san}")
+
+        de_coc = DialogueEngine(db)
+        if de_coc.start_dialogue("dialogue_possessed_intro", flags=set(), san=80):
+            de_coc.present()
+            de_coc.advance()
+            if de_coc.get_choices():
+                de_coc.choose(0)
+            fin_p = de_coc.finish() or {}
+            if (fin_p.get("sanity_change") or 0) != 0:
+                errors.append(f"речь одержимого капает SAN: {fin_p}")
+    finally:
+        rpg.roll_3d6 = old_3d6
+
     from engine.game_engine import GameState as _GameState
 
     saved_end, saved_state = engine.ending_id, engine.state
@@ -1065,15 +1391,183 @@ def main():
     engine.quest_system.found_notes = old_notes
 
     old_pid = engine.player.id
-    engine.player.id = "mystic"
-    engine.flags.discard("mystic_trace")
-    engine.fired_triggers = set()
-    engine._load_map("hospital_floor_1")
-    engine.player.x, engine.player.y = 18, 2
-    engine._try_move(0, -1)
-    if "mystic_trace" not in engine.flags:
-        errors.append("мистик не оставляет след у лампы")
-    engine.player.id = old_pid
+    import engine.rpg_system as rpg_hear
+
+    old_hear = rpg_hear.roll_3d6
+    try:
+        rpg_hear.roll_3d6 = lambda: 3
+        engine.player.id = "mystic"
+        engine.flags.discard("mystic_trace")
+        engine.fired_triggers = set()
+        engine._load_map("hospital_floor_1")
+        engine.player.x, engine.player.y = 18, 2
+        engine._try_move(0, -1)
+        if "mystic_trace" not in engine.flags:
+            errors.append("мистик не оставляет след у лампы")
+        rpg_hear.roll_3d6 = lambda: 18
+        engine.flags.discard("mystic_trace")
+        engine.fired_triggers = set()
+        engine.player.x, engine.player.y = 18, 2
+        engine.messages = []
+        engine._try_move(0, -1)
+        if "mystic_trace" in engine.flags:
+            errors.append("провал слуха всё равно дал след")
+        if "сбился" not in " ".join(engine.messages).lower():
+            errors.append(f"провал слуха без фразы: {engine.messages}")
+        de_wh = DialogueEngine(db)
+        if not de_wh.start_dialogue(
+            "dialogue_watchman_intro",
+            flags={"class_mystic", "archive_name", "guilt_admitted"},
+            san=70,
+            player=players["mystic"],
+        ):
+            errors.append("не стартует постовой для свистка")
+        else:
+            de_wh.present()
+            de_wh.advance()
+            choices = de_wh.get_choices()
+            idx = next(
+                (i for i, line in enumerate(choices) if "свисток" in line.lower()),
+                None,
+            )
+            if idx is None:
+                errors.append(f"нет свистка у постового: {choices}")
+            else:
+                _kind, text_wh = de_wh.choose(idx)
+                if "свисток обычный" not in (text_wh or "").lower():
+                    errors.append(f"провал слуха свистка не сменил ответ: {text_wh}")
+                state = de_wh.current_dialogue
+                if state and (
+                    "archive_name" not in state.flags
+                    or "guilt_admitted" not in state.flags
+                ):
+                    errors.append(f"свисток снял правду: {sorted(state.flags)}")
+                fin_wh = de_wh.finish()
+                gained = set(fin_wh.get("flags") or [])
+                if "archive_name" in gained or "guilt_admitted" in gained:
+                    errors.append(f"свисток выдал правду: {fin_wh}")
+        rpg_hear.roll_3d6 = lambda: 3
+        de_wh_ok = DialogueEngine(db)
+        if de_wh_ok.start_dialogue(
+            "dialogue_watchman_intro",
+            flags={"class_mystic"},
+            san=70,
+            player=players["mystic"],
+        ):
+            de_wh_ok.present()
+            de_wh_ok.advance()
+            choices = de_wh_ok.get_choices()
+            idx = next(
+                (i for i, line in enumerate(choices) if "свисток" in line.lower()),
+                0,
+            )
+            _kind, text_ok = de_wh_ok.choose(idx)
+            if "не свищу" not in (text_ok or "").lower():
+                errors.append(f"успех свистка сломан: {text_ok}")
+            de_wh_ok.finish()
+        else:
+            errors.append("не стартует постовой для успеха свистка")
+    finally:
+        rpg_hear.roll_3d6 = old_hear
+        engine.player.id = old_pid
+
+    import engine.rpg_system as rpg_sneak
+
+    old_sneak = rpg_sneak.roll_3d6
+    try:
+        engine._load_map("hospital_basement")
+        shadow = next(
+            (e for e in engine.entities if getattr(e, "id", "") == "shadow_enemy"),
+            None,
+        )
+        if not shadow:
+            errors.append("в подвале нет тени для красться")
+        else:
+            rpg_sneak.roll_3d6 = lambda: 3
+            engine.state = _GameState.PLAYING
+            engine.current_enemy = None
+            engine.player.x, engine.player.y = shadow.x - 1, shadow.y
+            engine.messages = []
+            engine._try_move(1, 0)
+            if engine.state == _GameState.COMBAT:
+                errors.append("успех красться всё равно открыл сцену")
+            if (engine.player.x, engine.player.y) != (shadow.x + 1, shadow.y):
+                errors.append(
+                    f"не прошли за тень: {(engine.player.x, engine.player.y)} тень {(shadow.x, shadow.y)}"
+                )
+            if "мимо" not in " ".join(engine.messages).lower():
+                errors.append(f"успех красться без фразы: {engine.messages}")
+            rpg_sneak.roll_3d6 = lambda: 18
+            engine.state = _GameState.PLAYING
+            engine.current_enemy = None
+            engine.player.x, engine.player.y = shadow.x - 1, shadow.y
+            engine.messages = []
+            engine._try_move(1, 0)
+            if engine.state != _GameState.COMBAT:
+                errors.append("провал красться не открыл бой")
+            engine.state = _GameState.PLAYING
+            engine.current_enemy = None
+        rpg_sneak.roll_3d6 = lambda: 3
+        engine._load_map("hospital_floor_1")
+        possessed = next(
+            (e for e in engine.entities if getattr(e, "id", "") == "possessed_patient"),
+            None,
+        )
+        if not possessed:
+            errors.append("нет одержимого, чтобы проверить красться")
+        else:
+            engine.state = _GameState.PLAYING
+            engine.current_enemy = None
+            engine.player.x, engine.player.y = possessed.x - 1, possessed.y
+            engine._try_move(1, 0)
+            if engine.state != _GameState.COMBAT:
+                errors.append("одержимого обошли крастьюся")
+            engine.state = _GameState.PLAYING
+            engine.current_enemy = None
+    finally:
+        rpg_sneak.roll_3d6 = old_sneak
+
+    import engine.rpg_system as rpg_break
+
+    old_break = rpg_break.roll_3d6
+    old_break_id = engine.player.id
+    try:
+        rpg_break.roll_3d6 = lambda: 3
+        engine.player.id = "rebel"
+        engine.flags.discard("broke_door")
+        engine._load_map("hospital_floor_1")
+        engine.current_map[2][12] = "d"
+        wall = engine.current_map[3][12]
+        engine._try_open_door(12, 2, "d")
+        if engine.current_map[2][12] != "'":
+            errors.append("бунтарь не выбил дверь кабинета")
+        if "broke_door" not in engine.flags:
+            errors.append("нет флага сломанной двери")
+        if engine.current_map[3][12] != wall or wall == "'":
+            errors.append("плечо сломало стену канона")
+        rpg_break.roll_3d6 = lambda: 18
+        engine.flags.discard("broke_door")
+        engine.current_map[2][12] = "d"
+        engine._try_open_door(12, 2, "d")
+        if engine.current_map[2][12] != "d":
+            errors.append("провал лома всё равно открыл кабинет")
+        if "broke_door" in engine.flags:
+            errors.append("провал лома поставил broke_door")
+        rpg_break.roll_3d6 = lambda: 3
+        engine._load_map("hospital_basement")
+        engine.current_map[3][40] = "d"
+        engine._try_open_door(40, 3, "d")
+        if engine.current_map[3][40] != "d":
+            errors.append("бунтарь выбил дверь лаборатории")
+        engine.player.id = "seeker"
+        engine._load_map("hospital_floor_1")
+        engine.current_map[2][12] = "d"
+        engine._try_open_door(12, 2, "d")
+        if engine.current_map[2][12] != "d":
+            errors.append("искатель выбил дверь плечом")
+    finally:
+        rpg_break.roll_3d6 = old_break
+        engine.player.id = old_break_id
 
     colors = db.get_tile_colors()
     if "'" not in colors:

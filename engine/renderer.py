@@ -47,6 +47,9 @@ COLOR_DIALOGUE = _ink("paper")
 COLOR_UNKNOWN = libtcodpy.Color(0, 0, 0)
 COLOR_VOID_FG = _ink("graphite")
 COLOR_VOID_BG = _ink("void")
+COLOR_CHART_BG = _ink("soot")
+COLOR_MUTED = _ink("slate")
+COLOR_LAMP = _ink("lamp")
 _BLOOD_RGB = hex_to_rgb(INKS["blood"])
 # Глифы вне ASCII, которые шрифт tcod всё же рисует.
 _ALLOWED_UNICODE_GLYPHS = frozenset('≈±§¶')
@@ -113,7 +116,7 @@ class Renderer:
         self._san_rim_marks = []
         self._console_render = None
         self._portrait_textures = {}
-        self._pending_portrait = None 
+        self._pending_portraits = [] 
     def load_tile_colors_from_db(self, db_loader):
         """Загрузить цвета тайлов из БД."""
         try:
@@ -481,20 +484,66 @@ class Renderer:
     
   
     def draw_messages(self, messages: List[str]):
-        """Отрисовка сообщений (лог)."""
-        msg_y = self.map_height + 3
-        
-        # Показываем последние 3 сообщения
-        recent_messages = messages[-3:] if len(messages) > 3 else messages
-        
-        for i, msg in enumerate(recent_messages):
-            y = msg_y + i
-            if y < self.screen_height:
-                # Обрезаем слишком длинные сообщения
-                if len(msg) > self.screen_width - 2:
-                    msg = msg[:self.screen_width - 2]
-                self.console.print(1, y, msg, fg=COLOR_TEXT)
-            
+        """Лог живёт в карте больного (draw_hud). Вызов оставлен."""
+        return
+
+    def draw_hud(self, player):
+        """Нижняя карта больного: плоть, воля, долг, показания."""
+        hud_y = self.map_height
+        hud_h = self.screen_height - hud_y
+        if hud_h < 4 or not player:
+            return
+        inner = self.screen_width - 2
+        engine = self.game_engine
+        state = getattr(engine, "state", None)
+        in_fight = state in ("combat", "ability_menu")
+        occupation = getattr(player, "class_name", None) or "без занятия"
+        title = f"ДЕЛО · {occupation}"
+        self._draw_box(
+            0, hud_y, self.screen_width, hud_h, title=title, bg=COLOR_CHART_BG
+        )
+
+        flesh = (
+            f"плоть {self._hp_bar(player.hp, player.max_hp, 10)} "
+            f"{player.hp}/{player.max_hp}"
+        )
+        will = f"воля {self._hp_bar(player.san, player.max_san, 10)} {player.san}"
+        self.console.print(2, hud_y + 1, flesh[:inner], fg=COLOR_HP)
+        self.console.print(40, hud_y + 1, will[: max(0, inner - 38)], fg=COLOR_SANITY)
+
+        quest_line = ""
+        if in_fight:
+            quest_line = "Срыв. Ряды в кадре."
+        elif engine and getattr(engine, "quest_system", None):
+            flags = getattr(engine, "flags", None) or set()
+            desc = engine.quest_system.get_active_quest_descriptions(flags)
+            if desc:
+                quest_line = desc[0]
+        marks = player.chart_marks() if hasattr(player, "chart_marks") else ""
+        chart_note = quest_line
+        if marks:
+            chart_note = f"{quest_line} · {marks}" if quest_line else marks
+        if chart_note:
+            self.console.print(2, hud_y + 2, chart_note[:inner], fg=COLOR_DIALOGUE)
+
+        self.console.print(1, hud_y + 3, "─" * (self.screen_width - 2), fg=COLOR_MUTED)
+
+        messages = list(getattr(engine, "messages", None) or [])[-3:]
+        if in_fight:
+            messages = []
+        for i, msg in enumerate(messages):
+            self.console.print(2, hud_y + 4 + i, msg[:inner], fg=COLOR_TEXT)
+
+        if in_fight:
+            hint = "1 удар · 2 глагол · 3 бежать"
+        else:
+            hint = "ход · e стол · i карман · ? поля · F5 ночь"
+        self.console.print(2, self.screen_height - 1, hint[:inner], fg=COLOR_MUTED)
+
+    def draw_quests(self, quest_descriptions: List[str]):
+        """Долг живёт в карте больного. На карту не пишем."""
+        return
+
     def draw_dialogue(self, text: str, speaker_name: str = '', choices=None,
                       portrait_id: str = ''):
         """Окно диалога, при необходимости — бюст слева и варианты ответа."""
@@ -518,14 +567,7 @@ class Renderer:
             text_x = 4 + PORTRAIT_COLS + 1
             wrap_width = box_width - PORTRAIT_COLS - 3
         box_y = max(2, self.map_height - box_height - 1)
-
-        self.console.print(2, box_y, '┌' + '─' * (box_width - 2) + '┐', fg=COLOR_DIALOGUE)
-        for i in range(1, box_height - 1):
-            self.console.print(2, box_y + i, '│' + ' ' * (box_width - 2) + '│', fg=COLOR_DIALOGUE)
-        self.console.print(2, box_y + box_height - 1, '└' + '─' * (box_width - 2) + '┘', fg=COLOR_DIALOGUE)
-
-        if speaker_name:
-            self.console.print(text_x, box_y, f"[ {speaker_name} ]", fg=COLOR_DIALOGUE)
+        self._draw_box(2, box_y, box_width, box_height, title=speaker_name)
 
         wrapped = self._wrap_text(text or '', wrap_width)
         text_lines = max(2, box_height - 3 - extra) if show_face else 2
@@ -545,10 +587,148 @@ class Renderer:
             hint, fg=COLOR_TEXT)
 
         if show_face:
-            self._pending_portrait = (
-                portrait_id,
-                (3, box_y + 1, PORTRAIT_COLS, PORTRAIT_ROWS),
+            self._pending_portraits.append(
+                (portrait_id, (3, box_y + 1, PORTRAIT_COLS, PORTRAIT_ROWS))
             )
+
+    def _hp_bar(self, current: int, maximum: int, width: int = 12) -> str:
+        maximum = max(1, int(maximum or 1))
+        filled = max(0, min(width, int(round(width * max(0, current) / maximum))))
+        return "#" * filled + "-" * (width - filled)
+
+    def _fill_rect(self, x: int, y: int, w: int, h: int, bg):
+        for yy in range(y, y + h):
+            if yy < 0 or yy >= self.screen_height:
+                continue
+            for xx in range(x, x + w):
+                if 0 <= xx < self.screen_width:
+                    self.console.bg[xx, yy] = bg
+
+    def _draw_box(self, x: int, y: int, w: int, h: int, title: str = "", fg=None, bg=None):
+        """Бумажная рамка дела. Без новых чернил."""
+        fg = fg or COLOR_DIALOGUE
+        if bg is not None:
+            self._fill_rect(x, y, w, h, bg)
+        inner = max(0, w - 2)
+        label = f" {title} " if title else ""
+        if label and len(label) <= inner:
+            top = "┌" + label + "─" * (inner - len(label)) + "┐"
+        else:
+            top = "┌" + "─" * inner + "┐"
+        self.console.print(x, y, top[:w], fg=fg)
+        for i in range(1, h - 1):
+            self.console.print(x, y + i, "│" + " " * inner + "│", fg=fg)
+        self.console.print(x, y + h - 1, "└" + "─" * inner + "┘", fg=fg)
+
+    def _draw_silhouette(self, x: int, y: int, w: int, h: int):
+        """Тень без лица: халат, не gore."""
+        for row in range(h):
+            if row < 2:
+                pad = max(1, w // 3)
+            elif row < 4:
+                pad = max(1, w // 5)
+            else:
+                pad = 1
+            span = max(1, w - 2 * pad)
+            start = x + (w - span) // 2
+            glyph = "@" if row < 3 else "#"
+            for cx in range(start, start + span):
+                if 0 <= cx < self.screen_width and 0 <= y + row < self.screen_height:
+                    self.console.print(
+                        cx, y + row, glyph, fg=COLOR_SANITY, bg=COLOR_VOID_BG
+                    )
+
+    def _queue_face(self, portrait_id: str, box):
+        if not portrait_id or not getattr(self.game_engine, "use_sprites", True):
+            return False
+        if load_pixels(portrait_id) is None:
+            return False
+        self._pending_portraits.append((portrait_id, box))
+        return True
+
+    def draw_fight_scene(self, player, enemy, messages=None):
+        """Коридор гаснет. Две фигуры, кость, SAN. То же окно tcod."""
+        stage_w = self.screen_width - 2
+        stage_h = max(16, self.map_height - 1)
+        for y in range(stage_h):
+            for x in range(self.screen_width):
+                self.console.print(x, y, " ", fg=COLOR_VOID_FG, bg=COLOR_VOID_BG)
+
+        self.console.print(1, 1, "┌" + "─" * (stage_w - 2) + "┐", fg=COLOR_DIALOGUE)
+        for i in range(2, stage_h - 1):
+            self.console.print(1, i, "│" + " " * (stage_w - 2) + "│", fg=COLOR_DIALOGUE)
+        self.console.print(
+            1, stage_h - 1, "└" + "─" * (stage_w - 2) + "┘", fg=COLOR_DIALOGUE
+        )
+        title = "[ СРЫВ ]"
+        self.console.print(
+            1 + (stage_w - len(title)) // 2, 1, title, fg=COLOR_SANITY
+        )
+
+        left = (3, 3, PORTRAIT_COLS, PORTRAIT_ROWS)
+        right = (
+            stage_w - PORTRAIT_COLS - 1,
+            3,
+            PORTRAIT_COLS,
+            PORTRAIT_ROWS,
+        )
+        player_id = getattr(player, "id", "") if player else ""
+        enemy_id = getattr(enemy, "id", "") if enemy else ""
+        if not self._queue_face(player_id, left):
+            self._draw_silhouette(*left)
+        if enemy_id and not self._queue_face(enemy_id, right):
+            self._draw_silhouette(*right)
+        elif not enemy_id:
+            self._draw_silhouette(*right)
+
+        you = getattr(player, "class_name", None) or getattr(player, "name", "Вы")
+        foe = getattr(enemy, "name", "Тень") if enemy else "—"
+        self.console.print(3, 3 + PORTRAIT_ROWS + 1, you[:PORTRAIT_COLS], fg=COLOR_PLAYER)
+        self.console.print(
+            right[0], 3 + PORTRAIT_ROWS + 1, foe[:PORTRAIT_COLS], fg=COLOR_SANITY
+        )
+
+        mid_x = 3 + PORTRAIT_COLS + 2
+        mid_w = max(12, right[0] - mid_x - 1)
+        you_hp = getattr(player, "hp", 0) if player else 0
+        you_max = getattr(player, "max_hp", 1) if player else 1
+        foe_hp = getattr(enemy, "hp", 0) if enemy else 0
+        foe_max = getattr(enemy, "max_hp", 1) if enemy else 1
+        self.console.print(mid_x, 4, f"Вы {self._hp_bar(you_hp, you_max)} {you_hp}/{you_max}", fg=COLOR_HP)
+        self.console.print(
+            mid_x, 6, f"{foe[:10]} {self._hp_bar(foe_hp, foe_max)} {foe_hp}/{foe_max}",
+            fg=COLOR_SANITY,
+        )
+        san = getattr(player, "san", None)
+        if san is not None:
+            self.console.print(mid_x, 8, f"SAN {san}", fg=COLOR_SANITY)
+        engine = self.game_engine
+        penalty = 0
+        if engine and getattr(engine, "san_system", None):
+            penalty = engine.san_system.get_combat_penalty()
+        if penalty:
+            self.console.print(mid_x, 9, f"штраф кости {penalty}", fg=COLOR_TEXT)
+
+        log = list(messages or [])[-3:]
+        y = 11
+        for msg in log:
+            for line in self._wrap_text(msg, mid_w)[:2]:
+                if y >= stage_h - 6:
+                    break
+                self.console.print(mid_x, y, line[:mid_w], fg=COLOR_DIALOGUE)
+                y += 1
+
+        verb = "—"
+        if player and getattr(player, "class_ability", None):
+            verb = (player.class_ability.get("name") or "Глагол")[:28]
+        ranks = (
+            "1  Удар · d20",
+            f"2  {verb}",
+            "3  Бежать",
+        )
+        rank_y = stage_h - 1 - len(ranks)
+        for i, line in enumerate(ranks):
+            self.console.print(3, rank_y + i, line[: stage_w - 4], fg=COLOR_TEXT)
 
     def draw_ability_menu(self, player, selected_index: int = 0):
         """Окно меню способностей в бою."""
@@ -573,7 +753,7 @@ class Renderer:
         
         # Название способности
         ability_name = ability.get('name', 'Неизвестная способность')
-        self.console.print(box_x + 2, box_y + 2, f"Название: {ability_name}", fg=libtcodpy.Color(255, 255, 150))
+        self.console.print(box_x + 2, box_y + 2, f"Название: {ability_name}", fg=COLOR_LAMP)
         
         # Описание
         description = ability.get('description', 'Нет описания')
@@ -584,9 +764,9 @@ class Renderer:
         # Стоимость SAN
         san_cost = ability.get('san_cost', 0)
         if san_cost > 0:
-            self.console.print(box_x + 4, box_y + 9, f"Стоимость: {san_cost} SAN", fg=libtcodpy.Color(200, 100, 100))
+            self.console.print(box_x + 4, box_y + 9, f"Стоимость: {san_cost} SAN", fg=COLOR_SANITY)
         else:
-            self.console.print(box_x + 4, box_y + 9, "Стоимость: бесплатно", fg=libtcodpy.Color(150, 200, 150))
+            self.console.print(box_x + 4, box_y + 9, "Стоимость: бесплатно", fg=COLOR_MUTED)
         
         # Эффект
         effect_type = ability.get('type', '')
@@ -611,7 +791,7 @@ class Renderer:
         """Финальный экран новеллы."""
         for y in range(self.screen_height):
             for x in range(self.screen_width):
-                self.console.bg[x, y] = libtcodpy.Color(8, 6, 8)
+                self.console.bg[x, y] = COLOR_VOID_BG
         self.console.print(
             self.screen_width // 2 - len(title) // 2,
             self.screen_height // 2 - 4,
@@ -632,7 +812,7 @@ class Renderer:
             self.screen_width // 2 - len(hint) // 2,
             body_y + 11,
             hint,
-            fg=libtcodpy.Color(120, 120, 120),
+            fg=COLOR_MUTED,
         )
     
     def _wrap_text(self, text: str, width: int):
@@ -659,12 +839,16 @@ class Renderer:
     def draw_class_selection(self, classes, selected_index: int, has_save: bool = False):
         """Экран выбора класса."""
         self.console.clear()
-        
+        self._fill_rect(0, 0, self.screen_width, self.screen_height, COLOR_VOID_BG)
+        self._draw_box(6, 3, self.screen_width - 12, 6, title="ДЕЛО")
         title = "ПЕТЕРБУРГ. КЛИНИКА. БРЕД."
-        subtitle = "Выберите, кем вы были до пробуждения..."
-        
-        self.console.print(self.screen_width // 2 - len(title) // 2, 5, title, fg=COLOR_DIALOGUE)
-        self.console.print(self.screen_width // 2 - len(subtitle) // 2, 7, subtitle, fg=COLOR_TEXT)
+        subtitle = "Кем вы были до пробуждения."
+        self.console.print(
+            self.screen_width // 2 - len(title) // 2, 5, title, fg=COLOR_LAMP
+        )
+        self.console.print(
+            self.screen_width // 2 - len(subtitle) // 2, 7, subtitle, fg=COLOR_TEXT
+        )
         
         for i, cls in enumerate(classes):
             y = 12 + i * 8
@@ -682,56 +866,14 @@ class Renderer:
         hint = "↑/↓ — выбор | Enter — новая ночь"
         if has_save:
             hint += " | C — продолжить"
-        self.console.print(10, self.screen_height - 3, hint, fg=COLOR_TEXT)
-        
-    def draw_hud(self, player):
-        """Панель состояния."""
-        hud_y = self.map_height
-        
-        # Разделитель
-        self.console.print(0, hud_y, '─' * self.screen_width, fg=COLOR_TEXT)
-        
-        # Статистика
-        self.console.print(1, hud_y + 1,
-            f"HP:{player.hp}/{player.max_hp} SAN:{player.san}/{player.max_san} {player.class_name}",
-            fg=COLOR_TEXT
-        )
-        
-        # Управление
-        in_combat = getattr(self.game_engine, 'state', None) == 'combat'
-        if in_combat:
-            self.console.print(
-                1, hud_y + 2,
-                "БОЙ: пробел — удар | Esc — бежать",
-                fg=COLOR_HP,
-            )
-        else:
-            self.console.print(1, hud_y + 2,
-                "стрелки/hjkl | a e r i | F5/F9 | ? справка | q выход",
-                fg=COLOR_TEXT
-            )
-        
-    def draw_quests(self, quest_descriptions: List[str]):
-        """Отрисовка активных квестов."""
-        if not quest_descriptions:
-            return
-        
-        # Показываем квесты в логе сообщений (над HUD)
-        quest_y = self.map_height - 2
-        
-        for i, desc in enumerate(quest_descriptions[:2]):
-            y = quest_y - i
-            if y > 0:
-                if len(desc) > self.map_width - 2:
-                    desc = desc[:self.map_width - 2]
-                self.console.print(1, y, desc, fg=libtcodpy.Color(200, 180, 100))
-            
+        self.console.print(10, self.screen_height - 3, hint, fg=COLOR_MUTED)
+
     def present(self, context):
         """Вывод кадра. keep_aspect держит шаг буквы; масло — поверх консоли."""
         renderer = getattr(context, "sdl_renderer", None)
         atlas = getattr(context, "sdl_atlas", None)
-        pending = self._pending_portrait
-        self._pending_portrait = None
+        pending = list(self._pending_portraits)
+        self._pending_portraits = []
         if renderer is None or atlas is None:
             context.present(
                 self.console,
@@ -767,8 +909,10 @@ class Renderer:
         ox = (ww - draw_w) / 2
         oy = (wh - draw_h) / 2
         renderer.copy(console_tex, dest=(ox, oy, draw_w, draw_h))
-        if pending:
-            portrait_id, (tx, ty, tw, th) = pending
+        for item in pending or ():
+            if not item:
+                continue
+            portrait_id, (tx, ty, tw, th) = item
             cached = self._portrait_textures.get(portrait_id)
             texture = src_w = src_h = None
             if isinstance(cached, tuple) and len(cached) == 3:
@@ -857,27 +1001,22 @@ class Renderer:
             )
             
     def draw_legend(self):
-        """Постоянная расшифровка ASCII справа от карты."""
+        """Поля карты: расшифровка справа, чернила из палитры."""
         x0 = self.map_width
         width = self.legend_width
-        muted = libtcodpy.Color(110, 115, 120)
-        title_fg = libtcodpy.Color(220, 200, 150)
-        panel = libtcodpy.Color(18, 16, 18)
-
+        self._fill_rect(x0, 0, width, self.map_height, COLOR_VOID_BG)
         for y in range(self.map_height):
-            for x in range(x0, x0 + width):
-                self.console.bg[x, y] = panel
-            self.console.print(x0, y, '│', fg=muted)
+            self.console.print(x0, y, "│", fg=COLOR_MUTED)
 
-        self.console.print(x0 + 2, 1, 'легенда', fg=title_fg)
-        self.console.print(x0 + 1, 2, '─' * (width - 2), fg=muted)
+        self.console.print(x0 + 2, 1, "на полях", fg=COLOR_DIALOGUE)
+        self.console.print(x0 + 1, 2, "─" * (width - 2), fg=COLOR_MUTED)
 
         y = 4
         for symbol, short, _long in TILE_LEGEND:
             if y >= self.map_height - 3:
                 break
             fg, _bg = self._get_tile_color(symbol, True, True)
-            if symbol == '@':
+            if symbol == "@":
                 fg = COLOR_PLAYER
             self.console.print(x0 + 2, y, self._tile_glyph(symbol), fg=fg)
             label = short
@@ -886,69 +1025,45 @@ class Renderer:
             self.console.print(x0 + 4, y, label, fg=COLOR_TEXT)
             y += 1
 
-        mode = 'буквы' if getattr(self.game_engine, 'use_sprites', True) else 'тайлы'
-        self.console.print(x0 + 2, self.map_height - 2, f'? · F4 {mode}', fg=muted)
+        mode = "буквы" if getattr(self.game_engine, "use_sprites", True) else "тайлы"
+        self.console.print(x0 + 2, self.map_height - 2, f"? · F4 {mode}", fg=COLOR_MUTED)
 
     def draw_help(self):
-        """Окно помощи с расшифровкой условных обозначений."""
-        for y in range(self.screen_height):
-            for x in range(self.screen_width):
-                bg = self.console.bg[x, y]
-                r = int(bg[0]) if hasattr(bg, '__getitem__') else bg.r
-                g = int(bg[1]) if hasattr(bg, '__getitem__') else bg.g
-                b = int(bg[2]) if hasattr(bg, '__getitem__') else bg.b
-                self.console.bg[x, y] = libtcodpy.Color(
-                    max(0, r - 40),
-                    max(0, g - 40),
-                    max(0, b - 40)
-                )
-
+        """Поля карты и ход ночи."""
+        self._fill_rect(0, 0, self.screen_width, self.screen_height, COLOR_VOID_BG)
         controls = [
-            'hjkl / Стрелки — движение',
-            '1–9 — ответ в диалоге',
-            'a — атака | e — разговор, дверь, обыск',
-            'в бою: Пробел — удар, C — способность',
-            'r — читать записку | i — инвентарь',
-            'F5 — записать ночь | F9 — вернуться',
-            'F4 — буквы / картинки',
-            'M — музыка',
-            '? / F1 — это окно помощи',
-            'q / Esc — выход: ночь запишется',
+            "ход — стрелки / hjkl",
+            "1–9 — ответ в разговоре",
+            "e — стол, дверь, речь",
+            "a — удар рядом · в срыве: 1 2 3",
+            "r — бумага · i — карман халата",
+            "F5 — записать ночь · F9 — вернуться",
+            "F4 — буквы / картинки · M — музыка",
+            "? / F1 — эти поля · q — выход",
         ]
         box_width = 52
         box_height = 8 + len(TILE_LEGEND) + len(controls)
         box_height = min(box_height, self.screen_height - 2)
         box_x = (self.screen_width - box_width) // 2
         box_y = max(0, (self.screen_height - box_height) // 2)
-
-        self.console.print(box_x, box_y, '┌' + '─' * (box_width - 2) + '┐', fg=COLOR_DIALOGUE)
-        for i in range(1, box_height - 1):
-            self.console.print(box_x, box_y + i, '│' + ' ' * (box_width - 2) + '│', fg=COLOR_DIALOGUE)
-        self.console.print(box_x, box_y + box_height - 1, '└' + '─' * (box_width - 2) + '┘', fg=COLOR_DIALOGUE)
-
-        title = "УСЛОВНЫЕ ОБОЗНАЧЕНИЯ"
-        self.console.print(
-            box_x + (box_width - len(title)) // 2,
-            box_y + 1,
-            title,
-            fg=libtcodpy.Color(255, 220, 100)
+        self._draw_box(
+            box_x, box_y, box_width, box_height, title="ПОЛЯ КАРТЫ", bg=COLOR_CHART_BG
         )
-        self.console.print(box_x + 2, box_y + 2, '─' * (box_width - 4), fg=COLOR_TEXT)
 
-        y_offset = 4
+        y_offset = 2
         max_y = box_y + box_height - 8
         for symbol, _short, long_name in TILE_LEGEND:
             if box_y + y_offset > max_y:
                 break
             fg, _bg = self._get_tile_color(symbol, True, True)
-            if symbol == '@':
+            if symbol == "@":
                 fg = COLOR_PLAYER
             self.console.print(box_x + 4, box_y + y_offset, self._tile_glyph(symbol), fg=fg)
-            self.console.print(box_x + 8, box_y + y_offset, f'— {long_name}', fg=COLOR_TEXT)
+            self.console.print(box_x + 8, box_y + y_offset, f"— {long_name}", fg=COLOR_TEXT)
             y_offset += 1
 
         y_offset += 1
-        self.console.print(box_x + 2, box_y + y_offset, '─' * (box_width - 4), fg=COLOR_TEXT)
+        self.console.print(box_x + 2, box_y + y_offset, "─" * (box_width - 4), fg=COLOR_MUTED)
         y_offset += 1
         for control in controls:
             if box_y + y_offset >= box_y + box_height - 2:
@@ -956,83 +1071,50 @@ class Renderer:
             self.console.print(box_x + 4, box_y + y_offset, control, fg=COLOR_TEXT)
             y_offset += 1
 
+        close = "[ ? / F1 / Esc — закрыть ]"
         self.console.print(
-            box_x + (box_width - 30) // 2,
-            box_y + box_height - 2,
-            '[ ? / F1 / Esc — закрыть ]',
-            fg=libtcodpy.Color(150, 150, 150)
+            box_x + (box_width - len(close)) // 2,
+            box_y + box_height - 1,
+            close,
+            fg=COLOR_MUTED,
         )
-        
+
     def draw_inventory(self, player, selected_index: int):
-        """Окно инвентаря."""
-        # Размеры окна
+        """Карман халата — бумаги и ключи, не сумка MMORPG."""
+        items = list(getattr(player, "inventory", None) or [])
         box_width = 50
-        box_height = min(20, len(player.inventory) + 6)
+        box_height = min(20, max(8, len(items) + 6))
         box_x = (self.screen_width - box_width) // 2
         box_y = (self.screen_height - box_height) // 2
-        
-        # Затемняем только область окна (с отступом 2 клетки)
-        padding = 2
-        for y in range(max(0, box_y - padding), min(self.screen_height, box_y + box_height + padding)):
-            for x in range(max(0, box_x - padding), min(self.screen_width, box_x + box_width + padding)):
-                bg = self.console.bg[x, y]
-                r = int(bg[0]) if hasattr(bg, '__getitem__') else bg.r
-                g = int(bg[1]) if hasattr(bg, '__getitem__') else bg.g
-                b = int(bg[2]) if hasattr(bg, '__getitem__') else bg.b
-                self.console.bg[x, y] = libtcodpy.Color(
-                    max(0, r - 60),
-                    max(0, g - 60),
-                    max(0, b - 60)
-                )
-        
-        # Рамка
-        self.console.print(box_x, box_y, '┌' + '─' * (box_width - 2) + '┐', fg=COLOR_DIALOGUE)
-        for i in range(1, box_height - 1):
-            self.console.print(box_x, box_y + i, '│' + ' ' * (box_width - 2) + '│', fg=COLOR_DIALOGUE)
-        self.console.print(box_x, box_y + box_height - 1, '└' + '─' * (box_width - 2) + '┘', fg=COLOR_DIALOGUE)
-        
-        # Заголовок
-        title = "ИНВЕНТАРЬ"
-        self.console.print(
-            box_x + (box_width - len(title)) // 2,
-            box_y + 1,
-            title,
-            fg=COLOR_DIALOGUE
+        self._draw_box(
+            box_x, box_y, box_width, box_height,
+            title="КАРМАН ХАЛАТА", bg=COLOR_CHART_BG,
         )
-        
-        # Разделитель
-        self.console.print(box_x + 2, box_y + 2, '─' * (box_width - 4), fg=COLOR_TEXT)
-        
-        # Список предметов — читаем из player.inventory каждый раз
-        if not player.inventory:
-            self.console.print(box_x + 4, box_y + 4, "Пусто", fg=COLOR_TEXT)
+
+        if not items:
+            self.console.print(
+                box_x + 4, box_y + 3, "Ни бумаги, ни ключа.", fg=COLOR_MUTED
+            )
         else:
-            for i, item in enumerate(player.inventory):
-                y = box_y + 4 + i
+            for i, item in enumerate(items):
+                y = box_y + 3 + i
                 if y >= box_y + box_height - 3:
                     break
-                # Маркер выбранного предмета
                 if i == selected_index:
-                    marker = "▶ "
-                    color = COLOR_DIALOGUE
+                    marker, color = "· ", COLOR_DIALOGUE
                 else:
-                    marker = "  "
-                    color = COLOR_TEXT
-                # Имя предмета
-                item_name = getattr(item, 'name', 'Неизвестный предмет')
-                self.console.print(box_x + 4, y, f"{marker}{item_name}", fg=color)
-        
-        # Пункт "Выход"
+                    marker, color = "  ", COLOR_TEXT
+                name = getattr(item, "name", "без имени")
+                self.console.print(box_x + 4, y, f"{marker}{name}"[: box_width - 6], fg=color)
+
         exit_y = box_y + box_height - 3
-        if selected_index == len(player.inventory):
-            self.console.print(box_x + 4, exit_y, "▶ Выход", fg=COLOR_SANITY)
+        if selected_index == len(items):
+            self.console.print(box_x + 4, exit_y, "· закрыть", fg=COLOR_SANITY)
         else:
-            self.console.print(box_x + 4, exit_y, "  Выход", fg=COLOR_TEXT)
-        
-        # Подсказки
-        hints_y = box_y + box_height - 1
+            self.console.print(box_x + 4, exit_y, "  закрыть", fg=COLOR_MUTED)
         self.console.print(
-            box_x + 4, hints_y,
-            "↑/↓ — выбор | e — использовать | i/Esc — выход",
-            fg=COLOR_TEXT
+            box_x + 4,
+            box_y + box_height - 1,
+            "↑/↓ · e взять в руки · i закрыть",
+            fg=COLOR_MUTED,
         )

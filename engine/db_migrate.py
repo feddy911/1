@@ -297,6 +297,10 @@ def _apply_phase1(conn) -> None:
     _apply_phase10(conn)
     _apply_phase11(conn)
     _apply_phase12(conn)
+    _apply_phase13(conn)
+    _apply_phase14(conn)
+    _apply_phase15(conn)
+    _apply_phase16(conn)
     _apply_palette(conn)
     _apply_map_links(conn)
 
@@ -1311,6 +1315,128 @@ def _apply_phase12(conn) -> None:
                 "document_1",
             ),
         ],
+    )
+
+
+def _apply_phase13(conn) -> None:
+    """Восемь навыков × три занятия. Коридор — 3d6, не дерево."""
+    from engine.rpg_system import CLASS_SKILL_TABLE, SKILL_IDS
+
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS class_skills (
+            class_id TEXT NOT NULL,
+            skill_id TEXT NOT NULL,
+            threshold INTEGER NOT NULL,
+            PRIMARY KEY (class_id, skill_id)
+        );
+        """
+    )
+    conn.execute("DELETE FROM class_skills")
+    rows = []
+    for class_id, skills in CLASS_SKILL_TABLE.items():
+        for skill_id in SKILL_IDS:
+            rows.append((class_id, skill_id, int(skills[skill_id])))
+    conn.executemany(
+        "INSERT INTO class_skills (class_id, skill_id, threshold) VALUES (?, ?, ?)",
+        rows,
+    )
+
+
+def _apply_phase14(conn) -> None:
+    """Говорить: 3d6 на две уличные лжи. Правды тумана не трогаем."""
+    _ensure_column(conn, "dialogue_lines", "skill_id", "TEXT")
+    _ensure_column(conn, "dialogue_lines", "fail_next_order", "INTEGER")
+    conn.execute(
+        """UPDATE dialogue_lines
+           SET skill_id = 'talk', fail_next_order = 21
+           WHERE dialogue_id = 'dialogue_watchman_intro' AND order_num = 10"""
+    )
+    conn.execute(
+        """UPDATE dialogue_lines
+           SET skill_id = 'talk', fail_next_order = 31
+           WHERE dialogue_id = 'dialogue_beggar_intro' AND order_num = 11"""
+    )
+    conn.execute(
+        """DELETE FROM dialogue_lines
+           WHERE (dialogue_id = 'dialogue_watchman_intro' AND order_num = 21)
+              OR (dialogue_id = 'dialogue_beggar_intro' AND order_num = 31)"""
+    )
+    conn.executemany(
+        """INSERT INTO dialogue_lines
+           (dialogue_id, order_num, speaker, text, sanity_change, next_order,
+            choice_group, sets_flag, ending_id, requires_flag)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        [
+            (
+                "dialogue_watchman_intro",
+                21,
+                "npc",
+                "Халат не документ. Ступайте в номер.",
+                -2,
+                -1,
+                None,
+                "spoke_watchman",
+                None,
+                None,
+            ),
+            (
+                "dialogue_beggar_intro",
+                31,
+                "npc",
+                "Чужое имя слышно сразу. Стена сытая.",
+                -2,
+                -1,
+                None,
+                "spoke_beggar",
+                None,
+                None,
+            ),
+        ],
+    )
+
+
+def _apply_phase15(conn) -> None:
+    """Слышать: свисток постового. Лампа — в движке. Не новый этаж."""
+    _ensure_column(conn, "dialogue_lines", "skill_id", "TEXT")
+    _ensure_column(conn, "dialogue_lines", "fail_next_order", "INTEGER")
+    conn.execute(
+        """UPDATE dialogue_lines
+           SET skill_id = 'hear', fail_next_order = 54
+           WHERE dialogue_id = 'dialogue_watchman_intro' AND order_num = 14"""
+    )
+    conn.execute(
+        """DELETE FROM dialogue_lines
+           WHERE dialogue_id = 'dialogue_watchman_intro' AND order_num = 54"""
+    )
+    conn.execute(
+        """INSERT INTO dialogue_lines
+           (dialogue_id, order_num, speaker, text, sanity_change, next_order,
+            choice_group, sets_flag, ending_id, requires_flag)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (
+            "dialogue_watchman_intro",
+            54,
+            "npc",
+            "Свисток обычный. Горло — ваше.",
+            -2,
+            -1,
+            None,
+            "spoke_watchman",
+            None,
+            None,
+        ),
+    )
+
+
+def _apply_phase16(conn) -> None:
+    """Речь и двойник идут в таблицу CoC, не капают SAN поверх бумаги."""
+    conn.execute(
+        """UPDATE dialogue_lines
+           SET sanity_change = 0
+           WHERE sets_flag = 'guilt_admitted'
+              OR dialogue_id LIKE 'dialogue_possessed_%'
+              OR dialogue_id LIKE 'dialogue_double_%'"""
     )
 
 

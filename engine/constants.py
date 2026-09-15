@@ -21,6 +21,8 @@ SEARCHABLE_TILES = frozenset({'T', 'H', 'O', '"'})
 
 DOOR_TILES = frozenset({'D', 'd'})
 LOCKED_DOOR_TILES = frozenset({'d'})
+# Единственная дверь, которую бунтарь бьёт плечом. Стены .txt не рушим.
+SHOULDER_DOOR = ("hospital_floor_1", 12, 2)
 TRANSITION_TILES = frozenset({'S', 's', 'E'})
 
 TILE_TO_CONNECTION_TYPES = {

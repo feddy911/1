@@ -22,6 +22,7 @@ from engine.constants import (
     SCREEN_HEIGHT,
     SCREEN_WIDTH,
     SEARCHABLE_TILES,
+    SHOULDER_DOOR,
     TILE_BUMP_MESSAGES,
     TRANSITION_TILES,
     WALKABLE_TILES,
@@ -38,6 +39,14 @@ from engine.quest_system import (
     debt_face,
     has_debt,
     has_name,
+)
+from engine.rpg_system import (
+    SAN_EVENTS,
+    SAN_SPEECH_FLAGS,
+    is_canon_loot,
+    roll_skill,
+    san_loss_for,
+    skill_phrase,
 )
 from engine.renderer import Renderer
 from engine.sanity_system import SanSystem
@@ -385,6 +394,13 @@ class GameEngine:
             return False
         return self.current_map[y][x] in WALKABLE_TILES
 
+    def _cell_free_to_stand(self, x: int, y: int) -> bool:
+        if not self._cell_walkable(x, y):
+            return False
+        if self._character_at(x, y):
+            return False
+        return True
+
     def _snap_player_if_lost(self):
         if not self.player:
             return
@@ -551,7 +567,8 @@ class GameEngine:
         if self.state == GameState.COMBAT:
             return self._handle_combat(event)
         if self.state == GameState.ABILITY_MENU:
-            return self._handle_ability_menu(event)
+            self.state = GameState.COMBAT
+            return self._handle_combat(event)
         if self.state == GameState.DIALOGUE:
             return self._handle_dialogue(event)
         if self.state == GameState.ENDING:
@@ -697,7 +714,7 @@ class GameEngine:
                 old_hp = self.player.hp
                 self.player.hp = min(self.player.max_hp, self.player.hp + healing)
                 self.add_message(
-                    f"Вы используете '{item.name}'. Восстановлено {self.player.hp - old_hp} HP."
+                    f"Вы используете '{item.name}'. Восстановлено {self.player.hp - old_hp} плоти."
                 )
                 self.player.inventory.remove(item)
             else:
@@ -743,6 +760,14 @@ class GameEngine:
             self.add_message("Ключи используются автоматически при взаимодействии с дверью.")
             return
 
+        if effect == 'temporary_buff':
+            value = int(getattr(item, 'buff_value', 0) or 2)
+            duration = int(getattr(item, 'duration', 0) or 1)
+            self.player.add_effect('damage_buff', value=value, duration=duration)
+            self.add_message(f"{item.name}: рука тяжелее на {duration} удар.")
+            self.player.inventory.remove(item)
+            return
+
         if item_type == 'note' or effect == 'read_note':
             content = getattr(item, 'content', '') or ''
             if not content and self.quest_system:
@@ -766,7 +791,7 @@ class GameEngine:
         self.current_enemy = entity
         self.state = GameState.COMBAT
         self.add_message(f"БОЙ: {entity.name} (HP: {entity.hp}/{entity.max_hp})")
-        self.add_message("Space — атака | Esc — сбежать")
+        self.add_message("1 — удар · 2 — глагол класса · 3 — бежать")
 
     def _try_attack(self):
         """Атаковать соседнего врага."""
@@ -779,7 +804,6 @@ class GameEngine:
                 return
             if getattr(entity, 'id', '') == 'player_double':
                 self.add_message(f"{entity.name} не враг. Рука проходит сквозь халат.")
-                self.player.change_san(-4)
                 self._maybe_spawn_double()
                 return
             self.add_message(f"{entity.name} не враг.")
@@ -811,68 +835,18 @@ class GameEngine:
                 return True
 
         if event.sym == tcod.event.KeySym.ESCAPE:
-            if random.random() > 0.5:
-                self.add_message("Вы сбежали!")
-                self.current_enemy = None
-                self.state = GameState.PLAYING
-            else:
-                self.add_message("Не удалось сбежать!")
-                if self.current_enemy:
-                    _hit, _dmg, msg = perform_attack(self.current_enemy, self.player)
-                    self.add_message(f"Враг атакует: {msg}")
-                    if not self.player.is_alive():
-                        self.state = GameState.GAME_OVER
+            self._fight_flee()
             return True
 
-        if event.sym in (tcod.event.KeySym.SPACE, tcod.event.KeySym.RETURN):
-            if self.current_enemy:
-                # Получаем штраф от рассудка
-                san_penalty = 0
-                if self.san_system:
-                    san_penalty = self.san_system.get_combat_penalty()
-                
-                _hit, _damage, message = perform_attack(
-                    self.player, self.current_enemy, san_penalty=san_penalty
-                )
-                self.add_message(message)
-                
-                # Обновляем эффекты игрока после атаки
-                self.player.update_effects()
-                
-                if not self.current_enemy.is_alive():
-                    self.add_message(f"{self.current_enemy.name} погибает!")
-                    if self.current_enemy in self.entities:
-                        self.entities.remove(self.current_enemy)
-                    self.current_enemy = None
-                    self.state = GameState.PLAYING
-                    self.add_message("Победа!")
-                    return True
-                if self.current_enemy and self._is_hostile(self.current_enemy):
-                    _eh, _ed, enemy_msg = perform_attack(self.current_enemy, self.player)
-                    self.add_message(enemy_msg)
-                    self.add_message(
-                        f"Враг HP: {self.current_enemy.hp}/{self.current_enemy.max_hp}"
-                    )
-                    san_hit = getattr(self.current_enemy, 'sanity_damage', 0) or 0
-                    if san_hit:
-                        if self.san_system:
-                            events = self.san_system.lose_san(abs(san_hit), source="combat")
-                            for evt in events:
-                                self.add_message(evt)
-                        else:
-                            self.player.change_san(-abs(san_hit))
-                    if not self.player.is_alive():
-                        self.state = GameState.GAME_OVER
-                        self.add_message("Вы погибли...")
+        rank = self._fight_rank_from_event(event)
+        if rank == 0:
+            self._fight_strike()
             return True
-        
-        if event.sym == tcod.event.KeySym.C:
-            if self.current_enemy and self.player:
-                if not getattr(self.player, "class_ability", None):
-                    self.add_message("У этого класса нет способности.")
-                    return True
-                self.state = GameState.ABILITY_MENU
-                self.selected_ability_index = 0
+        if rank == 1:
+            self._fight_verb()
+            return True
+        if rank == 2:
+            self._fight_flee()
             return True
 
         if event.sym == tcod.event.KeySym.F5:
@@ -888,8 +862,94 @@ class GameEngine:
             tcod.event.KeySym.H, tcod.event.KeySym.J,
             tcod.event.KeySym.K, tcod.event.KeySym.L,
         ):
-            self.add_message("Вы в бою. Пробел — удар, C — способности, Esc — бежать.")
+            self.add_message("Вы в бою. 1 — удар, 2 — глагол, 3 — бежать.")
         return True
+
+    def _fight_rank_from_event(self, event) -> Optional[int]:
+        """Ряд сцены: 1 удар, 2 глагол, 3 бег. Пробел и C — те же ряды."""
+        name = getattr(event.sym, "name", "") or ""
+        idx = choice_index_from_key(name)
+        if idx is not None and 0 <= idx <= 2:
+            return idx
+        if event.sym in (tcod.event.KeySym.SPACE, tcod.event.KeySym.RETURN):
+            return 0
+        if event.sym == tcod.event.KeySym.C:
+            return 1
+        return None
+
+    def _fight_strike(self):
+        if not self.current_enemy:
+            return
+        san_penalty = 0
+        if self.san_system:
+            san_penalty = self.san_system.get_combat_penalty()
+        _hit, _damage, message = perform_attack(
+            self.player, self.current_enemy, san_penalty=san_penalty
+        )
+        self.add_message(message)
+        self.player.update_effects()
+        if not self.current_enemy.is_alive():
+            self._fight_victory()
+            return
+        self._enemy_riposte()
+
+    def _fight_verb(self):
+        """Классовый глагол в кадре. Не меню способности."""
+        if not self.player:
+            return
+        if not getattr(self.player, "class_ability", None):
+            self.add_message("У этого класса нет глагола.")
+            return
+        success, msg = self.player.use_class_ability(self.san_system)
+        self.add_message(msg)
+        if not success:
+            return
+        if self.current_enemy and self._is_hostile(self.current_enemy):
+            self._enemy_riposte()
+        if self.current_enemy and self.player.is_alive():
+            self.state = GameState.COMBAT
+        elif self.state != GameState.GAME_OVER:
+            self.state = GameState.PLAYING
+
+    def _fight_flee(self):
+        if random.random() > 0.5:
+            self.add_message("Вы сбежали!")
+            self.current_enemy = None
+            self.state = GameState.PLAYING
+            return
+        self.add_message("Не удалось сбежать!")
+        self._enemy_riposte()
+
+    def _fight_victory(self):
+        if self.current_enemy:
+            self.add_message(f"{self.current_enemy.name} погибает!")
+            if self.current_enemy in self.entities:
+                self.entities.remove(self.current_enemy)
+        self.current_enemy = None
+        self.state = GameState.PLAYING
+        self.add_message("Победа!")
+
+    def _enemy_riposte(self):
+        if not self.current_enemy or not self._is_hostile(self.current_enemy):
+            return
+        if not self.current_enemy.is_alive():
+            self._fight_victory()
+            return
+        _eh, _ed, enemy_msg = perform_attack(self.current_enemy, self.player)
+        self.add_message(enemy_msg)
+        self.add_message(
+            f"Враг HP: {self.current_enemy.hp}/{self.current_enemy.max_hp}"
+        )
+        san_hit = getattr(self.current_enemy, "sanity_damage", 0) or 0
+        if san_hit:
+            if self.san_system:
+                for evt in self.san_system.lose_san(abs(san_hit), source="combat"):
+                    self.add_message(evt)
+            else:
+                self.player.change_san(-abs(san_hit))
+        if not self.player.is_alive():
+            self.state = GameState.GAME_OVER
+            self.add_message("Вы погибли...")
 
     def _handle_ability_menu(self, event) -> bool:
         """Обработка ввода в меню способностей."""
@@ -1037,6 +1097,8 @@ class GameEngine:
         entity = self._character_at(new_x, new_y)
         if entity:
             if self._is_hostile(entity):
+                if self._try_sneak_past(entity, dx, dy):
+                    return
                 self._start_combat(entity)
             else:
                 self._bump_message(new_x, new_y, f"Перед вами — {entity.name}.")
@@ -1049,6 +1111,29 @@ class GameEngine:
         self.player.x = new_x
         self.player.y = new_y
         self._hold_bump_cell = None
+        self._after_step(new_x, new_y)
+
+    def _try_sneak_past(self, entity, dx: int, dy: int) -> bool:
+        """3d6 Красться мимо тени. Провал — бой как сейчас. Одержимого не обходим."""
+        if getattr(entity, "id", "") != "shadow_enemy":
+            return False
+        check = roll_skill(self.player, "sneak")
+        if not check.success:
+            self.add_message(skill_phrase(check, "sneak"))
+            return False
+        beyond_x = entity.x + dx
+        beyond_y = entity.y + dy
+        if self._cell_free_to_stand(beyond_x, beyond_y):
+            self.player.x = beyond_x
+            self.player.y = beyond_y
+            self._hold_bump_cell = None
+            self.add_message(skill_phrase(check, "sneak"))
+            self._after_step(beyond_x, beyond_y)
+            return True
+        self.add_message("Прошли у плеча. Дальше стена.")
+        return True
+
+    def _after_step(self, new_x: int, new_y: int):
         self._check_pickup()
 
         trigger_result = self.trigger_system.check_enter_trigger(
@@ -1059,18 +1144,26 @@ class GameEngine:
             self.add_message(msg)
         if (
             "trigger_whisper" in trigger_result.fired_ids
-            and getattr(self.player, "id", "") == "mystic"
-            and "mystic_trace" not in self.flags
         ):
-            self.flags.add("mystic_trace")
-            self.add_message(
-                "Шёпот узнаёт вас. Это уже не первый раз — вы просто не помните."
-            )
+            self._hear_lamp_whisper()
         self._apply_trigger_spawns(trigger_result, new_x, new_y)
         self._check_region(new_x, new_y)
         self._maybe_spawn_double()
         self._check_street_ending()
         self._compute_fov()
+
+    def _hear_lamp_whisper(self):
+        """3d6 Слышать у лампы. Не новый этаж. Правды тумана не ставит."""
+        if not self.player or getattr(self.player, "id", "") != "mystic":
+            return
+        if "mystic_trace" in self.flags:
+            return
+        check = roll_skill(self.player, "hear")
+        if check.success:
+            self.flags.add("mystic_trace")
+            self.add_message(skill_phrase(check, "hear"))
+            return
+        self.add_message(skill_phrase(check, "hear"))
 
     def _apply_trigger_spawns(self, result, x: int, y: int):
         if result.spawn_character_id:
@@ -1125,6 +1218,7 @@ class GameEngine:
             self.add_message(
                 "Рядом стоит человек в таком же халате. Лица не разобрать."
             )
+            self._apply_san_event("double")
 
     def _try_open_door(self, x: int, y: int, tile: str):
         """Открыть дверь. Запертая требует свой ключ."""
@@ -1157,27 +1251,39 @@ class GameEngine:
                 )
                 play_sound("door")
                 self._mark_fov_dirty()
+            elif self._try_shoulder_door(x, y):
+                return
             elif required:
                 hint = LOCKED_DOOR_HINTS.get(getattr(self.player, 'id', ''))
                 if hint:
                     self.add_message(hint)
-                if getattr(self.player, 'id', '') == 'rebel':
-                    self.current_map[y][x] = "'"
-                    self.player.change_san(-8)
-                    self.player.take_damage(1)
-                    self.flags.add('broke_door')
-                    self.add_message(
-                        "Вы выбиваете дверь плечом. Замок орёт. Рассудок — тоже."
-                    )
-                    play_sound("door")
-                    self._mark_fov_dirty()
-                    self._maybe_spawn_double()
-                    return
                 needed = self.entity_factory.create_item(required)
                 name = needed.name if needed else "особый ключ"
                 self.add_message(f"Дверь заперта. Нужен {name}.")
             else:
                 self.add_message("Дверь заперта. Нужен ключ.")
+
+    def _try_shoulder_door(self, x: int, y: int) -> bool:
+        """Бунтарь: одна дверь плечом. 3d6 Ломать. Стены .txt не рушим."""
+        if getattr(self.player, "id", "") != "rebel":
+            return False
+        if (self.current_map_id, x, y) != SHOULDER_DOOR:
+            return False
+        if self.current_map[y][x] not in LOCKED_DOOR_TILES:
+            return False
+        check = roll_skill(self.player, "break")
+        if not check.success:
+            self.add_message(skill_phrase(check, "break"))
+            return True
+        self.current_map[y][x] = "'"
+        self.player.change_san(-8)
+        self.player.take_damage(1)
+        self.flags.add("broke_door")
+        self.add_message(skill_phrase(check, "break"))
+        play_sound("door")
+        self._mark_fov_dirty()
+        self._maybe_spawn_double()
+        return True
 
     def _check_pickup(self):
         """Проверить, есть ли предмет под игроком."""
@@ -1217,7 +1323,10 @@ class GameEngine:
                 if entity.dialogue_id:
                     dialogue_id = self._dialogue_repeat_id(entity.dialogue_id)
                     if self.dialogue_engine.start_dialogue(
-                        dialogue_id, flags=self.flags, san=self.player.san
+                        dialogue_id,
+                        flags=self.flags,
+                        san=self.player.san,
+                        player=self.player,
                     ):
                         self.state = GameState.DIALOGUE
                         self.current_dialogue_speaker = entity.name
@@ -1238,14 +1347,25 @@ class GameEngine:
     def _apply_dialogue_result(self, result: Optional[dict]):
         if not result:
             return
-        if result.get('sanity_change', 0) != 0:
-            self.player.change_san(result['sanity_change'])
+        held = set(self.flags)
+        new_flags = list(result.get('flags') or [])
+        speech = [
+            SAN_SPEECH_FLAGS[flag]
+            for flag in new_flags
+            if flag in SAN_SPEECH_FLAGS and flag not in held
+        ]
+        san_delta = result.get('sanity_change', 0) or 0
+        if speech:
+            for event_id in speech:
+                self._apply_san_event(event_id)
+        elif san_delta:
+            self.player.change_san(san_delta)
         for item_id in result.get('items_given', []):
             item = self.entity_factory.create_item(item_id)
             if item:
                 self.player.inventory.append(item)
                 self.add_message(f"Получено: {item.name}")
-        for flag in result.get('flags') or []:
+        for flag in new_flags:
             self.flags.add(flag)
         self._refresh_player_weapon()
         self._maybe_spawn_double()
@@ -1332,13 +1452,30 @@ class GameEngine:
                 return True
         return False
 
+    def _apply_san_event(self, event_id: str):
+        """Таблица CoC. Воля 3d6. Один раз на событие. Не инверсия клавиш."""
+        if not self.player or event_id not in SAN_EVENTS:
+            return
+        seen = f"san_checked:{event_id}"
+        if seen in self.flags:
+            return
+        self.flags.add(seen)
+        amount, phrase = san_loss_for(event_id, self.player)
+        if amount > 0:
+            if self.san_system:
+                for evt in self.san_system.lose_san(amount, source=event_id):
+                    self.add_message(evt)
+            else:
+                self.player.change_san(-amount)
+        if phrase:
+            self.add_message(phrase)
+
     def _search_container(self, x: int, y: int):
         tile = self.current_map[y][x]
         flag = f"searched:{self.current_map_id}:{x}:{y}"
         if flag in self.flags:
             self.add_message("Уже смотрели. Пыль легла обратно.")
             return
-        self.flags.add(flag)
         loot = self.db.get_container_loot(self.current_map_id, x, y)
         names = {
             "T": "Стол",
@@ -1348,13 +1485,24 @@ class GameEngine:
         }
         label = names.get(tile, "Мебель")
         if not loot:
+            self.flags.add(flag)
             self.add_message(f"{label}. Ничего, кроме пыли.")
             return
         item = self.entity_factory.create_item(loot["item_id"])
         if not item:
+            self.flags.add(flag)
             self.add_message(f"{label}. Пусто.")
             return
-        self.add_message(f"{label}. Нащупали.")
+        check = roll_skill(self.player, "search")
+        if not check.success and not is_canon_loot(item):
+            self.flags.add(flag)
+            self.add_message(f"{label}. {skill_phrase(check, 'search')}")
+            return
+        self.flags.add(flag)
+        if check.success:
+            self.add_message(f"{label}. {skill_phrase(check, 'search')}")
+        else:
+            self.add_message(f"{label}. Нащупали вслепую.")
         if getattr(item, "type", "") == "note":
             self._read_note(item)
         else:
@@ -1392,13 +1540,8 @@ class GameEngine:
                         self.add_message("Вы вспомнили, кому должны.")
                     elif truth == "knows_lizaveta":
                         self.add_message("Имя на полях — не ваше. Его ещё можно сказать вслух.")
-            sanity_damage = getattr(note, 'sanity_damage', 0) or 0
-            if sanity_damage != 0:
-                self.player.change_san(sanity_damage)
-                if sanity_damage < 0:
-                    self.add_message("Строка держит дольше, чем взгляд.")
-                else:
-                    self.add_message("Строка отпускает — ненадолго.")
+            if note.id in SAN_EVENTS:
+                self._apply_san_event(note.id)
             postscript = NOTE_POSTSCRIPTS.get(getattr(self.player, 'id', ''))
             if postscript:
                 self.add_message(postscript)
@@ -1514,7 +1657,12 @@ class GameEngine:
             self.renderer.present(self.context)
             return
 
-        if self.current_map and self.fov_system and self.player:
+        in_fight = self.state in (GameState.COMBAT, GameState.ABILITY_MENU)
+        if in_fight and self.player:
+            self.renderer.draw_fight_scene(
+                self.player, self.current_enemy, self.messages
+            )
+        elif self.current_map and self.fov_system and self.player:
             map_height = len(self.current_map)
             map_width = len(self.current_map[0]) if map_height else 0
             self._ensure_fov()
@@ -1525,14 +1673,23 @@ class GameEngine:
             self.renderer.draw_entities(self.entities)
             self.renderer.draw_player(self.player)
 
-        if self.state not in (GameState.CLASS_SELECTION, GameState.ENDING, GameState.GAME_OVER):
+        if self.state not in (
+            GameState.CLASS_SELECTION,
+            GameState.ENDING,
+            GameState.GAME_OVER,
+            GameState.COMBAT,
+            GameState.ABILITY_MENU,
+        ):
             self.renderer.draw_legend()
 
         if self.player:
             self.renderer.draw_hud(self.player)
-        self.renderer.draw_messages(self.messages)
+        if self.state not in (GameState.COMBAT, GameState.ABILITY_MENU):
+            self.renderer.draw_messages(self.messages)
 
-        if self.quest_system:
+        if self.quest_system and self.state not in (
+            GameState.COMBAT, GameState.ABILITY_MENU,
+        ):
             quest_desc = self.quest_system.get_active_quest_descriptions(self.flags)
             if quest_desc:
                 self.renderer.draw_quests(quest_desc)
@@ -1544,9 +1701,6 @@ class GameEngine:
                 self.current_dialogue_choices,
                 self.current_dialogue_portrait,
             )
-
-        if self.state == GameState.ABILITY_MENU and self.player:
-            self.renderer.draw_ability_menu(self.player, self.selected_ability_index)
 
         if self.showing_help:
             self.renderer.draw_help()
@@ -1560,13 +1714,14 @@ class GameEngine:
             )
             self.renderer.draw_ending(title, body)
         elif self.state == GameState.GAME_OVER:
+            from engine.renderer import COLOR_SANITY as _SAN, COLOR_VOID_BG as _VOID
             for y in range(SCREEN_HEIGHT):
                 for x in range(SCREEN_WIDTH):
-                    self.renderer.console.bg[x, y] = libtcodpy.Color(10, 5, 5)
+                    self.renderer.console.bg[x, y] = _VOID
             self.renderer.console.print(
                 SCREEN_WIDTH // 2 - 10, SCREEN_HEIGHT // 2,
                 "КОНЕЦ. Тени победили.",
-                fg=libtcodpy.Color(180, 50, 50)
+                fg=_SAN,
             )
 
         self.renderer.present(self.context)

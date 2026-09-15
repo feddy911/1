@@ -78,6 +78,7 @@ class DBLoader:
             ability = class_data.get('class_ability')
             if isinstance(ability, str) and ability:
                 class_data['class_ability'] = json.loads(ability)
+            class_data['skills'] = self.get_class_skills(class_data['id'])
             classes.append(class_data)
         return classes
     
@@ -94,6 +95,7 @@ class DBLoader:
         ability = class_data.get('class_ability')
         if isinstance(ability, str) and ability:
             class_data['class_ability'] = json.loads(ability)
+        class_data['skills'] = self.get_class_skills(class_id)
         return class_data
     
     def get_dungeon_spawn_pool(self, entity_type: str, player_san: int = 100) -> List[Dict]:
@@ -360,3 +362,14 @@ class DBLoader:
         except sqlite3.OperationalError:
             return None
         return dict(row) if row else None
+
+    def get_class_skills(self, class_id: str) -> dict:
+        """Пороги 3d6 занятия. Нет таблицы — пустой словарь, rpg_system даст 10."""
+        try:
+            rows = self.conn.execute(
+                "SELECT skill_id, threshold FROM class_skills WHERE class_id = ?",
+                (class_id,),
+            ).fetchall()
+        except sqlite3.OperationalError:
+            return {}
+        return {row["skill_id"]: int(row["threshold"]) for row in rows}

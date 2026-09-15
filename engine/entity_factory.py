@@ -21,6 +21,7 @@ class Player:
             'CON': int(json_stats.get('CON', class_data.get('base_con', 10))),
             'INT': int(json_stats.get('INT', class_data.get('base_int', 10))),
             'CHA': int(json_stats.get('CHA', class_data.get('base_cha', 10))),
+            'WILL': int(json_stats.get('SAN', json_stats.get('WILL', 10))),
         }
 
         con_mod = (self.stats['CON'] - 10) // 2
@@ -40,6 +41,7 @@ class Player:
         self.inventory: List[Item] = []
         starting = class_data.get('starting_items') or []
         self.starting_item_ids = list(starting) if isinstance(starting, list) else []
+        self.skills = dict(class_data.get('skills') or {})
         self.damage_die = '1d6'
         self.attack_bonus = 2 + str_mod
         self.armor_class = 10 + dex_mod
@@ -144,6 +146,27 @@ class Player:
             return True, msg + "!"
         
         return False, "Неизвестный тип способности."
+
+    def chart_marks(self) -> str:
+        """Короткие пометки шапки дела. Не кулдаун MMORPG."""
+        labels = {
+            "damage_buff": "рука тяжелее",
+            "next_crit": "удар насквозь",
+            "madness_immunity": "бред не берёт",
+        }
+        marks = []
+        for effect in self.active_effects:
+            if int(effect.get("duration") or 0) <= 0:
+                continue
+            label = labels.get(effect.get("type"))
+            if label and label not in marks:
+                marks.append(label)
+        return " · ".join(marks)
+
+    def add_effect(self, kind: str, value=True, duration: int = 1):
+        self.active_effects.append(
+            {"type": kind, "value": value, "duration": max(1, int(duration))}
+        )
     
     def has_active_effect(self, effect_type: str) -> bool:
         """Проверить наличие активного эффекта."""
