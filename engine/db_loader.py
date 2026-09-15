@@ -75,6 +75,9 @@ class DBLoader:
             class_data = dict(row)
             class_data['base_stats'] = json.loads(class_data['base_stats'])
             class_data['starting_items'] = json.loads(class_data['starting_items'])
+            ability = class_data.get('class_ability')
+            if isinstance(ability, str) and ability:
+                class_data['class_ability'] = json.loads(ability)
             classes.append(class_data)
         return classes
     
@@ -88,6 +91,9 @@ class DBLoader:
         class_data = dict(row)
         class_data['base_stats'] = json.loads(class_data['base_stats'])
         class_data['starting_items'] = json.loads(class_data['starting_items'])
+        ability = class_data.get('class_ability')
+        if isinstance(ability, str) and ability:
+            class_data['class_ability'] = json.loads(ability)
         return class_data
     
     def get_dungeon_spawn_pool(self, entity_type: str, player_san: int = 100) -> List[Dict]:

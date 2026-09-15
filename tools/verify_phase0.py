@@ -633,6 +633,8 @@ def main():
     low_fx = SanSystem(low).get_sanity_effects()
     if low_fx.get("visual") != "periphery":
         errors.append(f"низкий SAN visual={low_fx.get('visual')}")
+    if low_fx.get("control") is not None:
+        errors.append("SAN не должен инвертировать клавиши")
     if low_fx.get("hallucinations"):
         errors.append("галлюцинации размазаны по карте")
     renderer_src = (ROOT / "engine" / "renderer.py").read_text(encoding="utf-8")
@@ -735,6 +737,20 @@ def main():
             errors.append(f"у постового с классом и бумагой не 5 ответов: {de_five.get_choices()}")
     else:
         errors.append("не стартует постовой для пяти ответов")
+
+    de_dup = DialogueEngine(db)
+    if de_dup.start_dialogue(
+        "dialogue_watchman_repeat",
+        flags={"guilt_admitted", "knows_lizaveta"},
+        san=70,
+    ):
+        de_dup.present()
+        de_dup.advance()
+        liz_lines = [c for c in de_dup.get_choices() if "лизавет" in c.lower()]
+        if len(liz_lines) != 1:
+            errors.append(f"две «Лизавете» на повторе: {liz_lines}")
+    else:
+        errors.append("не стартует повтор постового для долга")
 
     pile = {
         "archive_name",
@@ -1344,6 +1360,28 @@ def main():
                 errors.append("карта печатает точку вместо маски пола")
             if probe._tile_glyph("Ж") != "Ж":
                 errors.append("кириллица на карте ушла в PUA")
+            from engine.clinic_tiles import (
+                WALL_MASK_BASE,
+                paint_wall_mask,
+                wall_glyph,
+                wall_neighbor_mask,
+            )
+
+            pillar = [list("..."), list(".#."), list("...")]
+            if wall_neighbor_mask(pillar, 1, 1) != 0:
+                errors.append("столб стены стыкуется с полом")
+            run = [list("#####")]
+            if wall_neighbor_mask(run, 2, 0) != (1 | 2 | 4 | 8):
+                # N/S за краем — стена, E/W — стена
+                errors.append(f"ряд стен не сплошной: {wall_neighbor_mask(run, 2, 0)}")
+            lip = tile_alpha_sum(paint_wall_mask(0))
+            solid = tile_alpha_sum(paint_wall_mask(15))
+            if lip <= solid:
+                errors.append("открытая стена не гуще сплошной")
+            if tile_alpha_sum(tileset.get_tile(WALL_MASK_BASE)) != lip:
+                errors.append("автотайл столба не в тайлсете")
+            if probe._tile_glyph("#", 1, 1, pillar) != wall_glyph(0):
+                errors.append("карта не берёт автотайл стены")
             probe.game_engine.use_sprites = False
             if probe._tile_glyph(".") != ".":
                 errors.append("F4 не возвращает букву на карте")

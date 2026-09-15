@@ -31,6 +31,12 @@ class DialogueState:
         required = line.get('requires_flag')
         if required and required not in self.flags and required not in self.flags_set:
             return False
+        # Бумага уже стала долгом — не предлагать вторую «Лизавете».
+        if (
+            required == "knows_lizaveta"
+            and ("guilt_admitted" in self.flags or "guilt_admitted" in self.flags_set)
+        ):
+            return False
         min_san = line.get('requires_min_san')
         if min_san is not None and min_san != '' and self.san < int(min_san):
             return False

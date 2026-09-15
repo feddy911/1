@@ -89,6 +89,61 @@ def _wall() -> np.ndarray:
     return tile
 
 
+WALL_CONNECT = frozenset({"#", '"', "W"})
+WALL_MASK_BASE = SPRITE_PUA_BASE + 64
+
+
+def wall_neighbor_mask(tiles, x: int, y: int) -> int:
+    """N=1 E=2 S=4 W=8. За краем карты — стена, чтобы фасад не крошился."""
+    height = len(tiles)
+    width = len(tiles[0]) if height else 0
+
+    def is_wall(nx: int, ny: int) -> bool:
+        if not (0 <= ny < height and 0 <= nx < width):
+            return True
+        return tiles[ny][nx] in WALL_CONNECT
+
+    mask = 0
+    if is_wall(x, y - 1):
+        mask |= 1
+    if is_wall(x + 1, y):
+        mask |= 2
+    if is_wall(x, y + 1):
+        mask |= 4
+    if is_wall(x - 1, y):
+        mask |= 8
+    return mask
+
+
+def wall_glyph(mask: int) -> str:
+    return chr(WALL_MASK_BASE + (mask & 15))
+
+
+def paint_wall_mask(mask: int) -> np.ndarray:
+    """Кирпич плюс губа на открытых сторонах. 15 = сплошная штукатурка."""
+    tile = _wall()
+    bits = mask & 15
+    if bits == 15:
+        return tile
+    if not bits & 1:
+        for x in range(TILE_WIDTH):
+            _stamp(tile, x, 0, 255)
+            _stamp(tile, x, 1, 190)
+    if not bits & 4:
+        for x in range(TILE_WIDTH):
+            _stamp(tile, x, TILE_HEIGHT - 1, 255)
+            _stamp(tile, x, TILE_HEIGHT - 2, 190)
+    if not bits & 8:
+        for y in range(TILE_HEIGHT):
+            _stamp(tile, 0, y, 255)
+            _stamp(tile, 1, y, 170)
+    if not bits & 2:
+        for y in range(TILE_HEIGHT):
+            _stamp(tile, TILE_WIDTH - 1, y, 255)
+            _stamp(tile, TILE_WIDTH - 2, y, 170)
+    return tile
+
+
 def _floor() -> np.ndarray:
     """Редкие доски: фон-смоль должен остаться темнее стены."""
     tile = _blank()
@@ -620,6 +675,8 @@ def stamp_proto_tiles(tileset) -> None:
         return
     for char in sprite_chars():
         tileset[sprite_codepoint(char)] = paint_proto_tile(char)
+    for mask in range(16):
+        tileset[WALL_MASK_BASE + mask] = paint_wall_mask(mask)
     tileset._clinic_sprites_ready = True
 
 

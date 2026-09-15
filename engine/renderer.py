@@ -8,7 +8,7 @@ import tcod
 from tcod import libtcodpy
 
 from engine.constants import LEGEND_WIDTH, SCREEN_HEIGHT, SCREEN_WIDTH, TILE_LEGEND
-from engine.clinic_tiles import TILE_HEIGHT, TILE_WIDTH, map_glyph
+from engine.clinic_tiles import TILE_HEIGHT, TILE_WIDTH, map_glyph, wall_glyph, wall_neighbor_mask
 from engine.palette import INKS, explored_color_dicts, hex_to_rgb, visible_color_dicts
 from engine.portraits import PORTRAIT_COLS, PORTRAIT_ROWS, load_pixels
 
@@ -141,7 +141,7 @@ class Renderer:
         except (ValueError, IndexError):
             return libtcodpy.Color(100, 100, 100)
 
-    def _tile_glyph(self, char: str) -> str:
+    def _tile_glyph(self, char: str, x: int = None, y: int = None, tiles=None) -> str:
         """Картинка только на карте. Точка в речи остаётся точкой."""
         engine = self.game_engine
         if not engine or not getattr(engine, "use_sprites", True):
@@ -149,6 +149,8 @@ class Renderer:
         tileset = getattr(engine, "clinic_tileset", None)
         if not getattr(tileset, "_clinic_sprites_ready", False):
             return char
+        if char == "#" and tiles is not None and x is not None and y is not None:
+            return wall_glyph(wall_neighbor_mask(tiles, x, y))
         return map_glyph(char, True)
     
     def _get_tile_color(self, char: str, is_visible: bool, is_explored: bool):
@@ -267,7 +269,9 @@ class Renderer:
                             fg = self._mix_color(fg, _ink("frost"), 0.55 * frost_share)
                             bg = self._mix_color(bg, _ink("ice"), 0.40 * frost_share)
 
-                self.console.print(screen_x, screen_y, self._tile_glyph(char), fg=fg, bg=bg)
+                self.console.print(
+                    screen_x, screen_y, self._tile_glyph(char, x, y, tiles), fg=fg, bg=bg
+                )
 
         self._draw_sanity_periphery(tiles, map_width, map_height)
 
@@ -545,6 +549,63 @@ class Renderer:
                 portrait_id,
                 (3, box_y + 1, PORTRAIT_COLS, PORTRAIT_ROWS),
             )
+
+    def draw_ability_menu(self, player, selected_index: int = 0):
+        """Окно меню способностей в бою."""
+        if not player or not player.class_ability:
+            return
+        
+        ability = player.class_ability
+        box_width = 60
+        box_height = 12
+        box_x = (self.screen_width - box_width) // 2
+        box_y = (self.screen_height - box_height) // 2
+        
+        # Рисуем рамку
+        self.console.print(box_x, box_y, '┌' + '─' * (box_width - 2) + '┐', fg=COLOR_DIALOGUE)
+        for i in range(1, box_height - 1):
+            self.console.print(box_x, box_y + i, '│' + ' ' * (box_width - 2) + '│', fg=COLOR_DIALOGUE)
+        self.console.print(box_x, box_y + box_height - 1, '└' + '─' * (box_width - 2) + '┘', fg=COLOR_DIALOGUE)
+        
+        # Заголовок
+        title = "[ СПОСОБНОСТИ КЛАССА ]"
+        self.console.print(box_x + (box_width - len(title)) // 2, box_y, title, fg=COLOR_DIALOGUE)
+        
+        # Название способности
+        ability_name = ability.get('name', 'Неизвестная способность')
+        self.console.print(box_x + 2, box_y + 2, f"Название: {ability_name}", fg=libtcodpy.Color(255, 255, 150))
+        
+        # Описание
+        description = ability.get('description', 'Нет описания')
+        wrapped_desc = self._wrap_text(description, box_width - 6)
+        for i, line in enumerate(wrapped_desc[:4]):
+            self.console.print(box_x + 4, box_y + 4 + i, line, fg=COLOR_TEXT)
+        
+        # Стоимость SAN
+        san_cost = ability.get('san_cost', 0)
+        if san_cost > 0:
+            self.console.print(box_x + 4, box_y + 9, f"Стоимость: {san_cost} SAN", fg=libtcodpy.Color(200, 100, 100))
+        else:
+            self.console.print(box_x + 4, box_y + 9, "Стоимость: бесплатно", fg=libtcodpy.Color(150, 200, 150))
+        
+        # Эффект
+        effect_type = ability.get('type', '')
+        effect_map = {
+            'combat_buff': f"+{ability.get('damage_bonus', 0)} к урону на {ability.get('duration', 1)} ход(а)",
+            'critical_strike': "Следующий удар будет критическим",
+            'sanity_restore': f"+{ability.get('san_restore', 0)} SAN, иммунитет к безумию" if ability.get('madness_immunity') else f"+{ability.get('san_restore', 0)} SAN",
+        }
+        effect_text = effect_map.get(effect_type, "Неизвестный эффект")
+        self.console.print(box_x + 4, box_y + 10, f"Эффект: {effect_text}", fg=COLOR_TEXT)
+        
+        # Подсказки
+        hints = "[Space — использовать] [Esc — отмена]"
+        self.console.print(box_x + (box_width - len(hints)) // 2, box_y + box_height - 1, hints, fg=COLOR_DIALOGUE)
+        
+        # Текущий SAN игрока
+        san_info = f"Ваш SAN: {player.san}/{player.max_san}"
+        self.console.print(box_x + 4, box_y + box_height - 2, san_info, fg=COLOR_SANITY)
+
 
     def draw_ending(self, title: str, body: str):
         """Финальный экран новеллы."""
@@ -846,6 +907,7 @@ class Renderer:
             'hjkl / Стрелки — движение',
             '1–9 — ответ в диалоге',
             'a — атака | e — разговор, дверь, обыск',
+            'в бою: Пробел — удар, C — способность',
             'r — читать записку | i — инвентарь',
             'F5 — записать ночь | F9 — вернуться',
             'F4 — буквы / картинки',
@@ -924,10 +986,10 @@ class Renderer:
                 )
         
         # Рамка
-        self.console.print(box_x, box_y, '┌' + '─' * (box_width - 2) + '', fg=COLOR_DIALOGUE)
+        self.console.print(box_x, box_y, '┌' + '─' * (box_width - 2) + '┐', fg=COLOR_DIALOGUE)
         for i in range(1, box_height - 1):
             self.console.print(box_x, box_y + i, '│' + ' ' * (box_width - 2) + '│', fg=COLOR_DIALOGUE)
-        self.console.print(box_x, box_y + box_height - 1, '└' + '─' * (box_width - 2) + '', fg=COLOR_DIALOGUE)
+        self.console.print(box_x, box_y + box_height - 1, '└' + '─' * (box_width - 2) + '┘', fg=COLOR_DIALOGUE)
         
         # Заголовок
         title = "ИНВЕНТАРЬ"
@@ -935,7 +997,7 @@ class Renderer:
             box_x + (box_width - len(title)) // 2,
             box_y + 1,
             title,
-            fg=libtcodpy.Color(255, 220, 100)
+            fg=COLOR_DIALOGUE
         )
         
         # Разделитель
@@ -952,7 +1014,7 @@ class Renderer:
                 # Маркер выбранного предмета
                 if i == selected_index:
                     marker = "▶ "
-                    color = libtcodpy.Color(255, 255, 100)
+                    color = COLOR_DIALOGUE
                 else:
                     marker = "  "
                     color = COLOR_TEXT
@@ -963,7 +1025,7 @@ class Renderer:
         # Пункт "Выход"
         exit_y = box_y + box_height - 3
         if selected_index == len(player.inventory):
-            self.console.print(box_x + 4, exit_y, "▶ Выход", fg=libtcodpy.Color(255, 100, 100))
+            self.console.print(box_x + 4, exit_y, "▶ Выход", fg=COLOR_SANITY)
         else:
             self.console.print(box_x + 4, exit_y, "  Выход", fg=COLOR_TEXT)
         
@@ -972,5 +1034,5 @@ class Renderer:
         self.console.print(
             box_x + 4, hints_y,
             "↑/↓ — выбор | e — использовать | i/Esc — выход",
-            fg=libtcodpy.Color(150, 150, 150)
+            fg=COLOR_TEXT
         )

@@ -7,6 +7,7 @@ __pycache__/
 env/
 venv/
 ENV/
+.venv/
 build/
 develop-eggs/
 dist/
@@ -23,12 +24,15 @@ wheels/
 .installed.cfg
 *.egg
 
-# База данных (если не хочешь хранить в Git)
-# data/petersburg.db
+# База канона живёт в git. Не игнорируем data/petersburg.db.
 
 # Сохранения игр
 saves/
 data/saves/
+
+# Секреты и среда
+.env
+.env.*
 
 # Временные файлы
 *.log
@@ -37,6 +41,7 @@ data/saves/
 # IDE
 .idea/
 .vscode/
+.spyproject/
 *.swp
 *.swo
 *~

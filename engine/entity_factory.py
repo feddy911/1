@@ -1,5 +1,5 @@
 """Фабрика сущностей — создаёт игроков, NPC, предметы."""
-from typing import List, Optional
+from typing import List, Optional, Tuple
 from tcod import libtcodpy
 
 
@@ -43,6 +43,19 @@ class Player:
         self.damage_die = '1d6'
         self.attack_bonus = 2 + str_mod
         self.armor_class = 10 + dex_mod
+        
+        # Боевая способность класса
+        ability_json = class_data.get('class_ability')
+        import json as json_module
+        if ability_json and isinstance(ability_json, str):
+            self.class_ability = json_module.loads(ability_json)
+        elif isinstance(ability_json, dict):
+            self.class_ability = ability_json
+        else:
+            self.class_ability = None
+        
+        # Активные эффекты способности
+        self.active_effects = []
     
     def is_alive(self) -> bool:
         return self.hp > 0
@@ -72,6 +85,95 @@ class Player:
             self.gain_san(amount)
         else:
             self.lose_san(abs(amount))
+    
+    def use_class_ability(self, san_system=None) -> Tuple[bool, str]:
+        """Использовать способность класса. Возвращает (успех, сообщение)."""
+        if not self.class_ability:
+            return False, "У этого класса нет способности."
+        
+        ability = self.class_ability
+        ability_type = ability.get('type', '')
+        
+        # Проверка SAN cost
+        san_cost = ability.get('san_cost', 0)
+        if san_cost > 0 and self.san < san_cost:
+            return False, f"Недостаточно рассудка для {ability['name']} (нужно {san_cost})."
+        
+        # Применяем эффект в зависимости от типа
+        if ability_type == 'combat_buff':
+            # Временный бонус к урону
+            damage_bonus = ability.get('damage_bonus', 0)
+            duration = ability.get('duration', 1)
+            self.active_effects.append({
+                'type': 'damage_buff',
+                'value': damage_bonus,
+                'duration': duration
+            })
+            if san_cost > 0:
+                self.lose_san(san_cost)
+            return True, f"{ability['name']}: +{damage_bonus} к урону на {duration} ход(а)!"
+        
+        elif ability_type == 'critical_strike':
+            # Автоматический крит - просто помечаем следующий удар как критический
+            self.active_effects.append({
+                'type': 'next_crit',
+                'value': True,
+                'duration': 1
+            })
+            return True, f"{ability['name']}: следующий удар будет критическим!"
+        
+        elif ability_type == 'sanity_restore':
+            # Восстановление SAN
+            san_restore = ability.get('san_restore', 0)
+            madness_immunity = ability.get('madness_immunity', False)
+            
+            old_san = self.san
+            self.gain_san(san_restore)
+            actual_restore = self.san - old_san
+            
+            if madness_immunity:
+                self.active_effects.append({
+                    'type': 'madness_immunity',
+                    'value': True,
+                    'duration': 1
+                })
+            
+            msg = f"{ability['name']}: восстановлено {actual_restore} SAN"
+            if madness_immunity:
+                msg += ", иммунитет к безумию на 1 ход"
+            return True, msg + "!"
+        
+        return False, "Неизвестный тип способности."
+    
+    def has_active_effect(self, effect_type: str) -> bool:
+        """Проверить наличие активного эффекта."""
+        for effect in self.active_effects:
+            if effect['type'] == effect_type and effect['duration'] > 0:
+                return True
+        return False
+    
+    def get_damage_bonus(self) -> int:
+        """Получить бонус к урону от активных эффектов."""
+        bonus = 0
+        for effect in self.active_effects:
+            if effect['type'] == 'damage_buff' and effect['duration'] > 0:
+                bonus += effect.get('value', 0)
+        return bonus
+    
+    def consume_next_crit(self) -> bool:
+        """Потребить эффект критического удара. Возвращает True если был крит."""
+        for i, effect in enumerate(self.active_effects):
+            if effect['type'] == 'next_crit' and effect['duration'] > 0:
+                self.active_effects.pop(i)
+                return True
+        return False
+    
+    def update_effects(self):
+        """Обновить длительность эффектов (вызывать каждый ход)."""
+        for effect in self.active_effects[:]:
+            effect['duration'] -= 1
+            if effect['duration'] <= 0:
+                self.active_effects.remove(effect)
 
 
 class Character:
