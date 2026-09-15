@@ -24,6 +24,7 @@ MAP_TRACKS: Dict[str, str] = {
     "hospital_basement": "basement",
     "street_outside": "street_canal",
     "street_traktir": "traktir",
+    "street_tenement": "street_canal",
     BRED_MAP_ID: "bred",
 }
 

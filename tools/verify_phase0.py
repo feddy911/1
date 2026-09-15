@@ -119,6 +119,10 @@ def main():
         "_fight_strike",
         "_fight_verb",
         "_fight_flee",
+        "_handle_talents_input",
+        "_handle_oil_input",
+        "_open_arrival",
+        "_toggle_equip",
     ):
         if name not in methods:
             errors.append(f"нет метода {name}")
@@ -176,9 +180,84 @@ def main():
         errors.append("крит красться без «мимо»")
     if skill_phrase(sneak_3, "talk"):
         errors.append("говорить имеет фразу таблицы")
+    from engine.talent_system import (
+        TALENTS,
+        take_talent,
+        visible_talents,
+    )
+    from engine.rpg_system import skill_target
+
+    combat_n = sum(1 for node in TALENTS if node.branch == "combat")
+    world_n = sum(1 for node in TALENTS if node.branch == "world")
+    if combat_n < 4 or world_n < 4:
+        errors.append(f"дерево без боя и мира: бой {combat_n} мир {world_n}")
+    if not any(node.parent_id for node in TALENTS):
+        errors.append("дерево без ветвления")
+    if any(node.verb == "see_trace" and node.effects.get("reroll") for node in TALENTS):
+        errors.append("след снова бросает кость")
+    rebel = players["rebel"]
+    rebel.san = 80
+    rebel.talents = []
+    ok, _msg = take_talent(rebel, "fight_2", set())
+    if ok:
+        errors.append("вторая ветка боя без корня")
+    ok, _msg = take_talent(rebel, "fight_1", set())
+    if not ok:
+        errors.append("бунтарь не берёт корень боя")
+    if rebel.san >= 80:
+        errors.append("талант не берёт волю")
+    after = skill_target(rebel, "break")
+    take_talent(rebel, "break_1", set())
+    if skill_target(rebel, "break") <= after:
+        errors.append("мирная/боевая ветка не меняет порог ломать")
+    seeker = players["seeker"]
+    seeker.san = 80
+    seeker.talents = []
+    base_search = skill_target(seeker, "search")
+    take_talent(seeker, "search_1", set())
+    if skill_target(seeker, "search") <= base_search:
+        errors.append("мирная ветка не меняет обыск")
+    if len(visible_talents(seeker)) <= 1:
+        errors.append("после корня не открываются ветки")
+    if "see_trace" in SKILL_PHRASES:
+        errors.append("след получил фразы броска")
+    rebel.talents = []
+    seeker.talents = []
+    rebel.san = rebel.max_san
+    seeker.san = seeker.max_san
+    from engine.constants import UNARMED_DAMAGE_DIE
+    from engine.entity_factory import EntityFactory
+    from engine.paintings import LOCATION_FILES, oil_id_for_item, oil_id_for_map, painting_path
+
+    knife = EntityFactory(db).create_item("item_knife")
+    if not knife or knife.type != "weapon" or knife.damage_die != "1d6":
+        errors.append("ржавый нож без кости")
+    host = GameEngine.__new__(GameEngine)
+    host.player = players["seeker"]
+    host.messages = []
+    host.add_message = lambda text: host.messages.append(text)
+    host.player.inventory = []
+    host.player.equipped_weapon_id = None
+    host._refresh_player_weapon()
+    if host.player.damage_die != UNARMED_DAMAGE_DIE:
+        errors.append("кулак не 1d3")
+    host.player.inventory = [knife]
+    host._toggle_equip(knife)
+    if host.player.equipped_weapon_id != "item_knife" or host.player.damage_die != "1d6":
+        errors.append("нож нельзя взять в руку")
+    host._toggle_equip(knife)
+    if host.player.equipped_weapon_id or host.player.damage_die != UNARMED_DAMAGE_DIE:
+        errors.append("нож не уходит в карман")
+    host.player.inventory = []
+    host.player.equipped_weapon_id = None
+    host._refresh_player_weapon()
+    for map_id in LOCATION_FILES:
+        if painting_path(oil_id_for_map(map_id)) is None:
+            errors.append(f"нет масла места {map_id}")
+    if painting_path(oil_id_for_item("item_knife")) is None:
+        errors.append("нет масла ножа")
     if players["seeker"].stats.get("WILL") != 13:
         errors.append("воля искателя не из SAN занятия")
-    from engine.entity_factory import EntityFactory
     shadow = EntityFactory(db).create_character("shadow_enemy")
     if not shadow:
         errors.append("нет тени для боя")
@@ -222,6 +301,10 @@ def main():
         errors.append("InventoryManager ещё импортируют")
     if "chart_marks" not in renderer_src:
         errors.append("баффы не в карте больного")
+    if "draw_oil_overlay" not in renderer_src:
+        errors.append("нет вида места")
+    if "в руке" not in renderer_src:
+        errors.append("HUD не показывает руку")
     if "temporary_buff" not in engine_src:
         errors.append("бафф предмета не идёт в эффекты")
     rebel = players["rebel"]
@@ -304,6 +387,7 @@ def main():
         ("hospital_basement", load_map(ROOT / "data" / "maps" / "basement.txt")),
         ("street_outside", load_map(ROOT / "data" / "maps" / "street.txt")),
         ("street_traktir", load_map(ROOT / "data" / "maps" / "traktir.txt")),
+        ("street_tenement", load_map(ROOT / "data" / "maps" / "tenement.txt")),
     ):
         for p in db.get_map_placements(map_id):
             x, y = p["x"], p["y"]
@@ -357,6 +441,8 @@ def main():
     engine.current_dialogue_speaker = ""
     engine.showing_help = False
     engine.is_inventory_open = False
+    engine.is_talents_open = False
+    engine.oil_overlay = None
     engine.inventory_selected_index = 0
     engine.current_enemy = None
     engine.state = "playing"
@@ -386,6 +472,8 @@ def main():
         errors.append("у Шпилькина нет веток выбора")
     if db.get_door_lock("hospital_floor_1", 12, 2) != "key_warden":
         errors.append("кабинет должен открываться ключом смотрителя")
+    if db.get_door_lock("street_tenement", 27, 2) != "key_tenement":
+        errors.append("нет замка квартиры при лавке")
     if db.get_door_lock("hospital_basement", 40, 3) != "key_basement":
         errors.append("лаборатория должна открываться ключом от подвала")
     if not db.get_region_at("street_outside", 8, 10):
@@ -432,6 +520,20 @@ def main():
     if street[3][26] != "E":
         errors.append("чёрный ход не выходит во двор")
     assert_map_walkable(errors, "traktir", traktir, (1, 7), 36)
+    tenement = load_map(ROOT / "data" / "maps" / "tenement.txt")
+    if tenement[6][0] != "E" or tenement[7][0] != "E":
+        errors.append("доходный дом: нет входа с тумана")
+    if tenement[2][27] != "d":
+        errors.append("доходный дом: нет запертой квартиры")
+    if tenement[3][24] != "H" or tenement[2][44] != "O":
+        errors.append("доходный дом: ключ или книга не в мебели")
+    if any(cell in {"S", "s"} for row in tenement for cell in row):
+        errors.append("доходный дом: лестница стала переходом")
+    if street[9][58] != "E" or street[10][58] != "E":
+        errors.append("туман не ведёт в дом")
+    if street[9][57] not in WALKABLE_TILES:
+        errors.append("из дома некуда выйти в туман")
+    assert_map_walkable(errors, "tenement", tenement, (1, 6), 48)
     from engine.constants import SEARCHABLE_TILES
     from engine.db_migrate import CONTAINER_LOOT
 
@@ -448,6 +550,7 @@ def main():
         "hospital_basement": basement,
         "street_outside": street,
         "street_traktir": traktir,
+        "street_tenement": tenement,
     }
     for map_id, x, y, item_id in CONTAINER_LOOT:
         grid = loot_grids.get(map_id)
@@ -469,6 +572,7 @@ def main():
         "hospital_basement": basement,
         "street_outside": street,
         "street_traktir": traktir,
+        "street_tenement": tenement,
     }
     for map_id, expect_w, expect_h in (
         ("hospital_floor_1", 57, 12),
@@ -477,6 +581,7 @@ def main():
         ("street_outside", 60, 20),
         ("street_traktir", 36, 14),
         ("hospital_bred", 57, 12),
+        ("street_tenement", 48, 14),
     ):
         meta = db.get_map(map_id)
         if not meta or meta["width"] != expect_w or meta["height"] != expect_h:
@@ -545,6 +650,10 @@ def main():
     engine._load_map("hospital_floor_1", spawn_player=True)
     if not db.get_character("innkeeper_semyon"):
         errors.append("нет трактирщика")
+    if not db.get_character("shopkeeper_lukin") or not db.get_character(
+        "landlady_praskovya"
+    ):
+        errors.append("нет жильцов доходного дома")
 
     from engine.dialogue_engine import DialogueEngine
     de = DialogueEngine(db)
@@ -1371,13 +1480,25 @@ def main():
     engine._check_street_ending()
     if engine.ending_id:
         errors.append(f"одно имя дало конец {engine.ending_id}")
+    engine.player.x, engine.player.y = 57, 9
+    engine._try_transition(58, 9)
+    if engine.current_map_id != "street_outside":
+        errors.append("одно имя пустило в дом")
     engine.flags.add("guilt_admitted")
     engine.flags.discard("fog_blocked")
+    engine.flags.discard("fog_house")
     engine.ending_id = None
     engine.state = _GameState.PLAYING
+    engine.player.x, engine.player.y = 51, 10
     engine._check_street_ending()
-    if engine.ending_id != "flee":
-        errors.append("имя и долг не открывают бегство")
+    if engine.ending_id:
+        errors.append(f"имя и долг дали титры в тумане: {engine.ending_id}")
+    engine.player.x, engine.player.y = 57, 9
+    engine._try_transition(58, 9)
+    if engine.current_map_id != "street_tenement":
+        errors.append("имя и долг не открывают дом")
+    engine._load_map("street_outside")
+    engine.player.x, engine.player.y = 57, 9
     engine.ending_id = None
     engine.state = _GameState.PLAYING
     engine.flags = {"class_seeker"}
@@ -1386,6 +1507,36 @@ def main():
     engine._check_street_ending()
     if engine.ending_id == "flee":
         errors.append("три записки снова ключ от тумана")
+    engine._try_transition(58, 9)
+    if engine.current_map_id != "street_outside":
+        errors.append("три записки пустили в дом")
+    from engine.quest_system import NOTE_TRUTH as _NOTE_TRUTH
+
+    if "note_tenement" in _NOTE_TRUTH:
+        errors.append("домовая книга снова ключ тумана")
+    de_house = DialogueEngine(db)
+    if de_house.start_dialogue(
+        "dialogue_praskovya_repeat",
+        flags={"archive_name", "guilt_admitted"},
+        san=80,
+    ):
+        de_house.present()
+        de_house.advance()
+        flee_choices = de_house.get_choices()
+        flee_i = next(
+            (i for i, text in enumerate(flee_choices) if "довольно" in text.lower()),
+            None,
+        )
+        if flee_i is None:
+            errors.append(f"Прасковья не отпускает в город: {flee_choices}")
+        else:
+            de_house.choose(flee_i)
+            de_house.advance()
+            fin_house = de_house.finish() or {}
+            if fin_house.get("ending_id") != "flee":
+                errors.append(f"Прасковья не даёт бегство: {fin_house}")
+    else:
+        errors.append("не стартует диалог Прасковьи")
     engine.ending_id = saved_end
     engine.state = saved_state
     engine.quest_system.found_notes = old_notes
@@ -1652,6 +1803,10 @@ def main():
         errors.append("нет переключателя буквы/картинки")
     if "KeySym.M" not in ge_src or "clinic_music" not in ge_src:
         errors.append("нет mute музыки")
+    if "KeySym.T" not in ge_src or "тетрадь" not in (
+        ROOT / "engine" / "renderer.py"
+    ).read_text(encoding="utf-8"):
+        errors.append("нет тетради талантов")
 
     from engine.constants import BRED_MAP_ID
     from engine.music import MAP_TRACKS, resolve_source
@@ -1662,6 +1817,7 @@ def main():
         "hospital_basement": "basement",
         "street_outside": "street_canal",
         "street_traktir": "traktir",
+        "street_tenement": "street_canal",
         BRED_MAP_ID: "bred",
     }
     if MAP_TRACKS != expected_tracks:
@@ -1689,6 +1845,8 @@ def main():
     engine.state = _LiveState.PLAYING
     engine.showing_help = False
     engine.is_inventory_open = False
+    engine.is_talents_open = False
+    engine.oil_overlay = None
     engine._reset_realtime()
     engine._compute_fov()
     fov_calls = {"n": 0}

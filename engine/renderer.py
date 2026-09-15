@@ -7,10 +7,30 @@ from typing import Dict, List
 import tcod
 from tcod import libtcodpy
 
-from engine.constants import LEGEND_WIDTH, SCREEN_HEIGHT, SCREEN_WIDTH, TILE_LEGEND
+from engine.constants import (
+    LEGEND_WIDTH,
+    SCREEN_HEIGHT,
+    SCREEN_WIDTH,
+    TILE_LEGEND,
+    UNARMED_DAMAGE_DIE,
+)
 from engine.clinic_tiles import TILE_HEIGHT, TILE_WIDTH, map_glyph, wall_glyph, wall_neighbor_mask
 from engine.palette import INKS, explored_color_dicts, hex_to_rgb, visible_color_dicts
 from engine.portraits import PORTRAIT_COLS, PORTRAIT_ROWS, load_pixels
+from engine.paintings import (
+    ITEM_LOOK_COLS,
+    ITEM_LOOK_ROWS,
+    LOCATION_OIL_COLS,
+    LOCATION_OIL_ROWS,
+    load_pixels as load_painting_pixels,
+)
+
+
+def load_oil_pixels(oil_id: str, item_type: str = ""):
+    pixels = load_pixels(oil_id)
+    if pixels is not None:
+        return pixels
+    return load_painting_pixels(oil_id, item_type)
 
 
 def _fit_portrait_dest(box_x, box_y, box_w, box_h, src_w, src_h):
@@ -537,7 +557,14 @@ class Renderer:
         if in_fight:
             hint = "1 удар · 2 глагол · 3 бежать"
         else:
-            hint = "ход · e стол · i карман · ? поля · F5 ночь"
+            hand = "кулак"
+            eq = getattr(player, "equipped_weapon_id", None)
+            if eq:
+                for item in getattr(player, "inventory", None) or []:
+                    if getattr(item, "id", None) == eq:
+                        hand = getattr(item, "name", "нож") or "нож"
+                        break
+            hint = f"в руке {hand} · ход · e стол · i карман · t тетрадь · ? поля"
         self.console.print(2, self.screen_height - 1, hint[:inner], fg=COLOR_MUTED)
 
     def draw_quests(self, quest_descriptions: List[str]):
@@ -644,6 +671,14 @@ class Renderer:
         if load_pixels(portrait_id) is None:
             return False
         self._pending_portraits.append((portrait_id, box))
+        return True
+
+    def _queue_oil(self, oil_id: str, box, item_type: str = ""):
+        if not oil_id or not getattr(self.game_engine, "use_sprites", True):
+            return False
+        if load_oil_pixels(oil_id, item_type) is None:
+            return False
+        self._pending_portraits.append((oil_id, box))
         return True
 
     def draw_fight_scene(self, player, enemy, messages=None):
@@ -918,7 +953,7 @@ class Renderer:
             if isinstance(cached, tuple) and len(cached) == 3:
                 texture, src_w, src_h = cached
             if texture is None:
-                pixels = load_pixels(portrait_id)
+                pixels = load_oil_pixels(portrait_id)
                 if pixels is not None:
                     src_h, src_w = int(pixels.shape[0]), int(pixels.shape[1])
                     texture = renderer.upload_texture(pixels)
@@ -1037,6 +1072,8 @@ class Renderer:
             "e — стол, дверь, речь",
             "a — удар рядом · в срыве: 1 2 3",
             "r — бумага · i — карман халата",
+            "t — тетрадь талантов (бой и мир)",
+            "при переходе — вид места · в кармане — осмотр и рука",
             "F5 — записать ночь · F9 — вернуться",
             "F4 — буквы / картинки · M — музыка",
             "? / F1 — эти поля · q — выход",
@@ -1080,41 +1117,195 @@ class Renderer:
         )
 
     def draw_inventory(self, player, selected_index: int):
-        """Карман халата — бумаги и ключи, не сумка MMORPG."""
+        """Карман халата — бумаги, ключи, рука. Не сумка MMORPG."""
+        from engine.paintings import oil_id_for_item
+
         items = list(getattr(player, "inventory", None) or [])
-        box_width = 50
-        box_height = min(20, max(8, len(items) + 6))
+        equipped = getattr(player, "equipped_weapon_id", None)
+        selected = None
+        if items and 0 <= selected_index < len(items):
+            selected = items[selected_index]
+        list_rows = max(1, len(items) + 1)
+        box_width = 72
+        box_height = min(
+            self.screen_height - 2,
+            max(PORTRAIT_ROWS + 4, list_rows + 6),
+        )
         box_x = (self.screen_width - box_width) // 2
         box_y = (self.screen_height - box_height) // 2
         self._draw_box(
             box_x, box_y, box_width, box_height,
             title="КАРМАН ХАЛАТА", bg=COLOR_CHART_BG,
         )
-
+        text_width = box_width - PORTRAIT_COLS - 8
         if not items:
             self.console.print(
                 box_x + 4, box_y + 3, "Ни бумаги, ни ключа.", fg=COLOR_MUTED
             )
+            list_bottom = box_y + 4
         else:
+            list_bottom = box_y + 3
             for i, item in enumerate(items):
                 y = box_y + 3 + i
-                if y >= box_y + box_height - 3:
+                if y >= box_y + box_height - 4:
                     break
                 if i == selected_index:
                     marker, color = "· ", COLOR_DIALOGUE
                 else:
                     marker, color = "  ", COLOR_TEXT
                 name = getattr(item, "name", "без имени")
-                self.console.print(box_x + 4, y, f"{marker}{name}"[: box_width - 6], fg=color)
+                if getattr(item, "id", None) == equipped:
+                    name = f"{name} — в руке"
+                self.console.print(
+                    box_x + 4, y, f"{marker}{name}"[:text_width], fg=color
+                )
+                list_bottom = y + 1
 
-        exit_y = box_y + box_height - 3
         if selected_index == len(items):
-            self.console.print(box_x + 4, exit_y, "· закрыть", fg=COLOR_SANITY)
+            close, close_color = "· закрыть", COLOR_SANITY
         else:
-            self.console.print(box_x + 4, exit_y, "  закрыть", fg=COLOR_MUTED)
+            close, close_color = "  закрыть", COLOR_MUTED
+        self.console.print(
+            box_x + 4, list_bottom, close[:text_width], fg=close_color
+        )
+
+        footer_y = box_y + box_height - 1
+        if selected is not None:
+            desc = getattr(selected, "description", "") or ""
+            if getattr(selected, "type", "") == "weapon":
+                die = getattr(selected, "damage_die", "") or UNARMED_DAMAGE_DIE
+                desc = f"{desc} Удар {die}.".strip()
+            wrap = self._wrap_text(desc, text_width)
+            shown = wrap[-2:] if wrap else []
+            for i, line in enumerate(shown):
+                self.console.print(
+                    box_x + 4,
+                    footer_y - 1 - len(shown) + i,
+                    line[:text_width],
+                    fg=COLOR_TEXT,
+                )
+            oil_x = box_x + box_width - PORTRAIT_COLS - 2
+            oil_y = box_y + (box_height - PORTRAIT_ROWS) // 2
+            self._queue_oil(
+                oil_id_for_item(getattr(selected, "id", "") or ""),
+                (oil_x, oil_y, PORTRAIT_COLS, PORTRAIT_ROWS),
+                getattr(selected, "type", "") or "",
+            )
+
+        hint = "↑/↓ · e рука / читать · i закрыть"
         self.console.print(
             box_x + 4,
+            footer_y,
+            hint[:text_width],
+            fg=COLOR_MUTED,
+        )
+
+    def draw_oil_overlay(self, overlay):
+        """Вид места при входе или вещи при осмотре. Карта .txt под холстом."""
+        kind = (overlay or {}).get("kind") or "place"
+        title = (overlay or {}).get("title") or ""
+        body = (overlay or {}).get("body") or ""
+        oil_id = (overlay or {}).get("oil_id") or ""
+        item_type = (overlay or {}).get("item_type") or ""
+        is_place = kind == "place"
+        cols = LOCATION_OIL_COLS if is_place else ITEM_LOOK_COLS
+        rows = LOCATION_OIL_ROWS if is_place else ITEM_LOOK_ROWS
+        box_width = min(self.screen_width - 4, max(cols + 4, 56))
+        box_height = min(self.map_height, rows + 8)
+        box_x = (self.screen_width - box_width) // 2
+        box_y = max(0, (self.map_height - box_height) // 2)
+        self._draw_box(
+            box_x, box_y, box_width, box_height,
+            title=title[: box_width - 4],
+            bg=COLOR_CHART_BG,
+        )
+        oil_x = box_x + (box_width - cols) // 2
+        oil_y = box_y + 2
+        queued = self._queue_oil(
+            oil_id, (oil_x, oil_y, cols, rows), item_type
+        )
+        text_y = oil_y + (rows if queued else 1)
+        wrap = self._wrap_text(body, box_width - 4)
+        max_lines = max(1, box_y + box_height - 3 - text_y)
+        for i, line in enumerate(wrap[:max_lines]):
+            self.console.print(
+                box_x + 2, text_y + i, line[: box_width - 4], fg=COLOR_TEXT
+            )
+        self.console.print(
+            box_x + 2,
             box_y + box_height - 1,
-            "↑/↓ · e взять в руки · i закрыть",
+            "e / пробел — дальше",
+            fg=COLOR_MUTED,
+        )
+
+    def draw_talents(self, player, selected_index: int = 0, flags=None):
+        """Тетрадь: боевые и мирные ветки восьми глаголов."""
+        from engine.talent_system import (
+            SAN_FLOOR,
+            deed_ready,
+            has_talent,
+            san_cost_for,
+            take_block_reason,
+            visible_talents,
+        )
+
+        nodes = visible_talents(player)
+        box_width = 72
+        box_height = min(28, max(12, len(nodes) + 8))
+        box_x = (self.screen_width - box_width) // 2
+        box_y = max(1, (self.screen_height - box_height) // 2)
+        occupation = getattr(player, "class_name", None) or "без занятия"
+        self._draw_box(
+            box_x, box_y, box_width, box_height,
+            title=f"ТЕТРАДЬ · {occupation}",
+            bg=COLOR_CHART_BG,
+        )
+        san = int(getattr(player, "san", 0) or 0)
+        head = f"воля {san} · после пометки не ниже {SAN_FLOOR}"
+        self.console.print(box_x + 2, box_y + 2, head[: box_width - 4], fg=COLOR_SANITY)
+        class_id = getattr(player, "id", "")
+        if not nodes:
+            self.console.print(
+                box_x + 4, box_y + 4, "Тетрадь пуста. Странно.", fg=COLOR_MUTED
+            )
+        for i, node in enumerate(nodes):
+            y = box_y + 4 + i
+            if y >= box_y + box_height - 3:
+                break
+            taken = has_talent(player, node.id)
+            cost = san_cost_for(node, class_id)
+            branch = "бой" if node.branch == "combat" else "мир"
+            if taken:
+                mark, color = "×", COLOR_DIALOGUE
+                tail = "взято"
+            else:
+                why = take_block_reason(player, node, flags)
+                mark, color = "·" if i == selected_index else " ", COLOR_TEXT
+                if why:
+                    color = COLOR_MUTED
+                    if node.require_deed == "truth" and not deed_ready(node, flags):
+                        tail = "нужны имя или долг"
+                    elif node.require_deed == "spoke" and not deed_ready(node, flags):
+                        tail = "нужен поступок"
+                    else:
+                        tail = f"{cost} воли"
+                else:
+                    tail = f"{cost} воли"
+                if i == selected_index:
+                    color = COLOR_LAMP
+            line = f"{mark} [{branch}] {node.name} — {tail}"
+            self.console.print(box_x + 2, y, line[: box_width - 4], fg=color)
+        if nodes and 0 <= selected_index < len(nodes):
+            desc = nodes[selected_index].description
+            self.console.print(
+                box_x + 2,
+                box_y + box_height - 3,
+                desc[: box_width - 4],
+                fg=COLOR_TEXT,
+            )
+        self.console.print(
+            box_x + 2,
+            box_y + box_height - 1,
+            "↑/↓ · e взять · t закрыть",
             fg=COLOR_MUTED,
         )

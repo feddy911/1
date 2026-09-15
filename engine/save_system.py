@@ -74,6 +74,8 @@ def dump_engine(engine) -> dict:
             "san": player.san,
             "max_san": player.max_san,
             "inventory": [item.id for item in player.inventory],
+            "talents": list(getattr(player, "talents", None) or []),
+            "equipped_weapon_id": getattr(player, "equipped_weapon_id", None),
         },
         "map_id": engine.current_map_id,
         "flags": sorted(engine.flags),

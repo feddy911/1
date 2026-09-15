@@ -44,7 +44,10 @@ def calculate_attack_bonus(attacker, san_penalty: int = 0) -> int:
     
     # Применяем штраф рассудка (только для игрока)
     if isinstance(attacker, Player):
-        final_bonus = base_bonus + san_penalty
+        talent = 0
+        if hasattr(attacker, "get_talent_attack"):
+            talent = attacker.get_talent_attack()
+        final_bonus = base_bonus + san_penalty + talent
         # Штраф не может снизить бонус ниже -5
         return max(-5, final_bonus)
     
@@ -114,16 +117,15 @@ def perform_attack(attacker, defender, san_penalty: int = 0, use_ability: bool =
         # Критический удар (натуральная 20 или от способности)
         if attack_roll == 20 or is_crit_from_ability:
             damage *= 2
-            crit_source = " (способность)" if is_crit_from_ability else ""
-            message = f"КРИТИЧЕСКИЙ УДАР{crit_source}! {attacker_name} наносит {damage} урона!"
+            crit_source = " — занятие" if is_crit_from_ability else ""
+            message = f"Удар навылет{crit_source}. {attacker_name} ранит на {damage}."
         else:
-            # Добавляем информацию о штрафе, если он был
             if san_penalty < 0:
-                message = f"{attacker_name} попадает (со штрафом {san_penalty}) и наносит {damage} урона."
+                message = f"{attacker_name} попал, хотя рука дрожала, и ранил на {damage}."
             elif damage_bonus > 0:
-                message = f"{attacker_name} попадает (+{damage_bonus} от способности) и наносит {damage} урона."
+                message = f"{attacker_name} попал тяжелее обыкновенного и ранил на {damage}."
             else:
-                message = f"{attacker_name} попадает и наносит {damage} урона."
+                message = f"{attacker_name} попал. Боль на {damage}."
         
         # Применяем урон
         if hasattr(defender, 'take_damage'):
@@ -133,10 +135,9 @@ def perform_attack(attacker, defender, san_penalty: int = 0, use_ability: bool =
     else:
         # Промах
         if attack_roll == 1:
-            message = f"{attacker_name} проваливает атаку (натуральная 1)!"
+            message = f"{attacker_name} махнул в пустоту. Пустота не обиделась."
         else:
-            reason = f"(штраф рассудка {san_penalty})" if san_penalty < 0 else ""
-            message = f"{attacker_name} промахивается {reason}(AC {armor_class})."
+            message = f"{attacker_name} промахнулся. Воздух гуще тела."
         
         return False, 0, message
 

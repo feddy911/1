@@ -42,7 +42,11 @@ class Player:
         starting = class_data.get('starting_items') or []
         self.starting_item_ids = list(starting) if isinstance(starting, list) else []
         self.skills = dict(class_data.get('skills') or {})
-        self.damage_die = '1d6'
+        self.talents: List[str] = []
+        self.equipped_weapon_id: Optional[str] = None
+        from engine.constants import UNARMED_DAMAGE_DIE
+
+        self.damage_die = UNARMED_DAMAGE_DIE
         self.attack_bonus = 2 + str_mod
         self.armor_class = 10 + dex_mod
         
@@ -113,7 +117,7 @@ class Player:
             })
             if san_cost > 0:
                 self.lose_san(san_cost)
-            return True, f"{ability['name']}: +{damage_bonus} к урону на {duration} ход(а)!"
+            return True, f"{ability['name']}: рука тяжелее на {duration} удар. Тяжелее — и стыднее."
         
         elif ability_type == 'critical_strike':
             # Автоматический крит - просто помечаем следующий удар как критический
@@ -122,7 +126,7 @@ class Player:
                 'value': True,
                 'duration': 1
             })
-            return True, f"{ability['name']}: следующий удар будет критическим!"
+            return True, f"{ability['name']}: следующий удар пойдёт насквозь. Насквозь — или никак."
         
         elif ability_type == 'sanity_restore':
             # Восстановление SAN
@@ -140,10 +144,10 @@ class Player:
                     'duration': 1
                 })
             
-            msg = f"{ability['name']}: восстановлено {actual_restore} SAN"
+            msg = f"{ability['name']}: воля вернулась на {actual_restore}"
             if madness_immunity:
-                msg += ", иммунитет к безумию на 1 ход"
-            return True, msg + "!"
+                msg += "; бред не берёт, пока держитесь"
+            return True, msg + "."
         
         return False, "Неизвестный тип способности."
 
@@ -181,7 +185,14 @@ class Player:
         for effect in self.active_effects:
             if effect['type'] == 'damage_buff' and effect['duration'] > 0:
                 bonus += effect.get('value', 0)
-        return bonus
+        from engine.talent_system import damage_bonus as talent_damage
+
+        return bonus + talent_damage(self)
+
+    def get_talent_attack(self) -> int:
+        from engine.talent_system import attack_bonus as talent_attack
+
+        return talent_attack(self)
     
     def consume_next_crit(self) -> bool:
         """Потребить эффект критического удара. Возвращает True если был крит."""

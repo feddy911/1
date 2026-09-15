@@ -2,7 +2,7 @@
 from typing import Optional, List, Dict, Tuple
 
 from engine.quest_system import DEBT_FLAGS, NAME_FLAGS, enrich_flags
-from engine.rpg_system import SAN_SPEECH_CHARACTERS, SAN_SPEECH_FLAGS, roll_skill
+from engine.rpg_system import SAN_SPEECH_CHARACTERS, SAN_SPEECH_FLAGS
 
 TRUTH_FLAGS = NAME_FLAGS | DEBT_FLAGS
 
@@ -67,7 +67,9 @@ class DialogueState:
         skill_id = (line.get("skill_id") or "").strip()
         if not skill_id or self.player is None:
             return False
-        return not roll_skill(self.player, skill_id).success
+        from engine.talent_system import roll_verb
+
+        return not roll_verb(self.player, skill_id).success
 
     def _choice_next(self, line: Dict, failed: bool):
         if failed:
