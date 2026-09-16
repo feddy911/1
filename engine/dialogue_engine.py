@@ -2,9 +2,96 @@
 from typing import Optional, List, Dict, Tuple
 
 from engine.quest_system import DEBT_FLAGS, NAME_FLAGS, enrich_flags
-from engine.rpg_system import SAN_SPEECH_CHARACTERS, SAN_SPEECH_FLAGS
+from engine.rpg_system import SAN_SPEECH_CHARACTERS, SAN_SPEECH_FLAGS, SKILL_NAMES
 
 TRUTH_FLAGS = NAME_FLAGS | DEBT_FLAGS
+
+
+def _is_lie_line(line: Dict) -> bool:
+    flag = line.get("is_lie")
+    if flag in (None, "", 0, "0"):
+        return False
+    return True
+
+
+def _effective_san(line: Dict, character_id=None) -> int:
+    change = int(line.get("sanity_change") or 0)
+    flag = line.get("sets_flag")
+    if character_id in SAN_SPEECH_CHARACTERS or flag in SAN_SPEECH_FLAGS:
+        return 0
+    return change
+
+
+def choice_stakes(line: Dict, character_id=None, flags=None, by_order=None) -> str:
+    """Что ответ даёт или забирает. Пусто, если ничего."""
+    bits = []
+    held = set(flags or ())
+    flag = (line.get("sets_flag") or "").strip()
+    if flag == "nastasya_escape" and flag not in held:
+        bits.append("долг: Настасье")
+    elif flag == "guilt_admitted" and flag not in held:
+        bits.append("долг: Лизавете")
+    elif flag == "archive_name" and flag not in held:
+        bits.append("имя")
+    change = _effective_san(line, character_id)
+    if change:
+        bits.append(f"воля {change:+d}")
+    ending = (line.get("ending_id") or "").strip()
+    if not ending and by_order:
+        nxt = line.get("next_order")
+        try:
+            dest = by_order.get(int(nxt))
+        except (TypeError, ValueError):
+            dest = None
+        if dest:
+            ending = (dest.get("ending_id") or "").strip()
+    if ending == "stay":
+        bits.append("остаться")
+    elif ending == "flee":
+        bits.append("уйти")
+    return ", ".join(bits)
+
+
+def choice_prefix(line: Dict, player=None, character_id=None, flags=None, by_order=None) -> str:
+    """Метка умения, лжи и ставки. Текст реплики не трогает."""
+    bits = []
+    skill_id = (line.get("skill_id") or "").strip()
+    if skill_id:
+        name = SKILL_NAMES.get(skill_id, skill_id)
+        if player is not None:
+            from engine.rpg_system import CHECK_DC, skill_modifier
+            from engine.talent_system import has_reroll
+
+            modifier = skill_modifier(player, skill_id)
+            chunk = f"{name}: 3d6{modifier:+d} ≥ {CHECK_DC}"
+            if has_reroll(player, skill_id):
+                chunk += ", повтор"
+            bits.append(f"[{chunk}]")
+        else:
+            bits.append(f"[{name}]")
+    if _is_lie_line(line):
+        bits.append("[ложь]")
+    stakes = choice_stakes(line, character_id=character_id, flags=flags, by_order=by_order)
+    if stakes:
+        bits.append(f"({stakes})")
+    return " ".join(bits)
+
+
+def format_choice_label(line: Dict, player=None, character_id=None, flags=None, by_order=None) -> str:
+    tag = choice_prefix(
+        line, player, character_id=character_id, flags=flags, by_order=by_order
+    )
+    text = line.get("text") or ""
+    if tag:
+        return f"{tag} {text}"
+    return text
+
+
+def format_check_banner(skill_id: str, total: int, target: int, success: bool, bonus: int = 0) -> str:
+    name = SKILL_NAMES.get(skill_id, skill_id)
+    outcome = "успех" if success else "провал"
+    shown = f"{total}{bonus:+d}" if bonus else str(total)
+    return f"{name}: {shown} ≥ {target} — {outcome}"
 
 
 class DialogueState:
@@ -26,6 +113,7 @@ class DialogueState:
         self.flags_set: List[str] = []
         self.ending_id: Optional[str] = None
         self.last_text = ''
+        self.last_check = ''
         self.choices: List[Dict] = []
 
     def _is_choice(self, line: Dict) -> bool:
@@ -62,14 +150,26 @@ class DialogueState:
         if ending:
             self.ending_id = ending
 
-    def _skill_failed(self, line: Dict) -> bool:
-        """3d6 «Говорить». Нет игрока — старый путь. Правду не снимаем."""
+    def _skill_roll(self, line: Dict):
+        """3d6 умения. Нет игрока — без броска. Правду не снимаем."""
         skill_id = (line.get("skill_id") or "").strip()
         if not skill_id or self.player is None:
-            return False
+            return None
+        from engine.rpg_system import skill_modifier
         from engine.talent_system import roll_verb
 
-        return not roll_verb(self.player, skill_id).success
+        check = roll_verb(self.player, skill_id)
+        bonus = skill_modifier(self.player, skill_id)
+        self.last_check = format_check_banner(
+            skill_id, check.total, check.target, check.success, bonus
+        )
+        return check
+
+    def _skill_failed(self, line: Dict) -> bool:
+        check = self._skill_roll(line)
+        if check is None:
+            return False
+        return not check.success
 
     def _choice_next(self, line: Dict, failed: bool):
         if failed:
@@ -203,7 +303,22 @@ class DialogueEngine:
     def get_choices(self) -> List[str]:
         if not self.current_dialogue:
             return []
-        return [line['text'] for line in self.current_dialogue.choices]
+        player = self.current_dialogue.player
+        return [
+            format_choice_label(
+                line,
+                player,
+                character_id=self.current_dialogue.character_id,
+                flags=self.current_dialogue.flags,
+                by_order=self.current_dialogue.by_order,
+            )
+            for line in self.current_dialogue.choices
+        ]
+
+    def get_check_banner(self) -> str:
+        if not self.current_dialogue:
+            return ""
+        return self.current_dialogue.last_check or ""
 
     def is_active(self) -> bool:
         return self.current_dialogue is not None and not self.current_dialogue.finished

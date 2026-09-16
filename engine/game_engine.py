@@ -16,6 +16,7 @@ from engine.constants import (
     DOOR_TILES,
     DOUBLE_SAN_THRESHOLD,
     ending_text,
+    EQUIP_SLOTS,
     LOCKED_DOOR_HINTS,
     LOCKED_DOOR_TILES,
     NOTE_POSTSCRIPTS,
@@ -119,6 +120,7 @@ class GameEngine:
         self.current_dialogue_speaker = ''
         self.current_dialogue_portrait = ''
         self.current_dialogue_choices: List[str] = []
+        self.current_check_banner = ''
 
         self.fov_system = None
         self.current_enemy = None
@@ -136,8 +138,10 @@ class GameEngine:
         self.showing_help = False
         self.is_inventory_open = False
         self.is_talents_open = False
+        self.is_character_open = False
         self.inventory_selected_index = 0
         self.talent_selected_index = 0
+        self.character_selected_index = 0
         self.oil_overlay = None
         self.use_sprites = True
         self._reset_realtime()
@@ -312,6 +316,7 @@ class GameEngine:
         self.showing_help = False
         self.is_inventory_open = False
         self.is_talents_open = False
+        self.is_character_open = False
         self.oil_overlay = None
         self.current_dialogue_choices = []
         self.current_map_id = None
@@ -598,6 +603,54 @@ class GameEngine:
         self._refresh_player_weapon()
         self.add_message(f"В руке: {item.name}.")
 
+    def _item_in_hand(self):
+        if not self.player:
+            return None
+        equipped_id = getattr(self.player, "equipped_weapon_id", None)
+        if not equipped_id:
+            return None
+        return next(
+            (
+                item
+                for item in self.player.inventory
+                if getattr(item, "id", None) == equipped_id
+            ),
+            None,
+        )
+
+    def _slot_fill(self, slot_id: str):
+        """Что в слоте: подпись и вещь, если есть."""
+        if slot_id == "body":
+            return "халат клиники", None
+        if slot_id == "hand":
+            held = self._item_in_hand()
+            if held:
+                return getattr(held, "name", "нож") or "нож", held
+            return "кулак", None
+        return "пусто", None
+
+    def _use_character_slot(self) -> None:
+        if not self.player:
+            return
+        slots = EQUIP_SLOTS
+        index = min(max(0, self.character_selected_index), len(slots) - 1)
+        slot_id, _name = slots[index]
+        if slot_id == "body":
+            self.add_message("Халат не снимают. Его уже сняли с кого-то.")
+            return
+        if slot_id in ("head", "belt"):
+            self.add_message("Пусто. Пока нечего надеть.")
+            return
+        held = self._item_in_hand()
+        if held:
+            self._toggle_equip(held)
+            return
+        for item in self.player.inventory:
+            if getattr(item, "type", "") == "weapon" and getattr(item, "damage_die", ""):
+                self._toggle_equip(item)
+                return
+        self.add_message("В руке кулак. Ножа в кармане нет.")
+
     def _open_arrival(self, map_id: str) -> None:
         map_data = self.db.get_map(map_id) if self.db else None
         name = (map_data or {}).get("name") or map_id
@@ -704,6 +757,8 @@ class GameEngine:
             return True
         if self.showing_help or self.is_inventory_open or self.is_talents_open:
             return True
+        if self.is_character_open:
+            return True
         if self.oil_overlay:
             return True
         return False
@@ -773,6 +828,9 @@ class GameEngine:
         if self.is_talents_open:
             return self._handle_talents_input(event)
 
+        if self.is_character_open:
+            return self._handle_character_input(event)
+
         if event.sym in (tcod.event.KeySym.Q, tcod.event.KeySym.ESCAPE):
             return self.quit_and_save()
 
@@ -790,6 +848,9 @@ class GameEngine:
         elif event.sym == tcod.event.KeySym.T:
             self.is_talents_open = True
             self.talent_selected_index = 0
+        elif event.sym == tcod.event.KeySym.C:
+            self.is_character_open = True
+            self.character_selected_index = 2
         elif event.sym in (
             tcod.event.KeySym.SLASH,
             tcod.event.KeySym.QUESTION,
@@ -837,6 +898,20 @@ class GameEngine:
             self.add_message(phrase)
             if ok:
                 play_sound("paper")
+        return True
+
+    def _handle_character_input(self, event) -> bool:
+        """Халат и слоты. Не кукла MMORPG."""
+        last = max(0, len(EQUIP_SLOTS) - 1)
+        if event.sym in (tcod.event.KeySym.C, tcod.event.KeySym.ESCAPE):
+            self.is_character_open = False
+            return True
+        if event.sym in (tcod.event.KeySym.UP, tcod.event.KeySym.K):
+            self.character_selected_index = max(0, self.character_selected_index - 1)
+        elif event.sym in (tcod.event.KeySym.DOWN, tcod.event.KeySym.J):
+            self.character_selected_index = min(last, self.character_selected_index + 1)
+        elif event.sym in (tcod.event.KeySym.E, tcod.event.KeySym.RETURN):
+            self._use_character_slot()
         return True
 
     def _use_selected_item(self):
@@ -1183,9 +1258,11 @@ class GameEngine:
             self.current_dialogue_text = ''
             self.current_dialogue_choices = []
             self.current_dialogue_portrait = ''
+            self.current_check_banner = ''
             return
         if kind == 'choices':
             self.current_dialogue_choices = self.dialogue_engine.get_choices()
+            self.current_check_banner = self.dialogue_engine.get_check_banner()
             if self.dialogue_engine.current_dialogue:
                 kept = self.dialogue_engine.current_dialogue.last_text
                 if kept:
@@ -1193,6 +1270,7 @@ class GameEngine:
             return
         self.current_dialogue_choices = []
         self.current_dialogue_text = text or ''
+        self.current_check_banner = self.dialogue_engine.get_check_banner()
 
     def _handle_dialogue(self, event) -> bool:
         name = getattr(event.sym, "name", "") or ""
@@ -1213,6 +1291,7 @@ class GameEngine:
             self.current_dialogue_text = ''
             self.current_dialogue_choices = []
             self.current_dialogue_portrait = ''
+            self.current_check_banner = ''
         elif event.sym in (tcod.event.KeySym.SPACE, tcod.event.KeySym.RETURN):
             if self.current_dialogue_choices:
                 return True
@@ -1894,6 +1973,7 @@ class GameEngine:
                 self.current_dialogue_speaker,
                 self.current_dialogue_choices,
                 self.current_dialogue_portrait,
+                self.current_check_banner,
             )
 
         if self.showing_help:
@@ -1905,6 +1985,11 @@ class GameEngine:
         if self.is_talents_open and self.player:
             self.renderer.draw_talents(
                 self.player, self.talent_selected_index, self.flags
+            )
+
+        if self.is_character_open and self.player:
+            self.renderer.draw_character(
+                self.player, self.character_selected_index
             )
 
         if self.oil_overlay:

@@ -1,4 +1,4 @@
-"""Кость клиники: 3d6 как GURPS, SAN-пара как CoC.
+"""Кость клиники: 3d6, успех если сумма с бонусом не ниже порога.
 
 Сцена боя остаётся d20. Коридор и бумаги — здесь.
 """
@@ -18,7 +18,20 @@ SKILL_IDS = (
     "see_trace",
 )
 
-# Занятие: порог 3d6. Дерево талантов — отдельно, не вместо порога.
+SKILL_NAMES = {
+    "search": "Обыск",
+    "read": "Чтение",
+    "talk": "Говорить",
+    "sneak": "Красться",
+    "fight": "Удар",
+    "hear": "Слышать",
+    "break": "Ломать",
+    "see_trace": "След",
+}
+
+# Занятие задаёт модификатор к 3d6 (значение − 10). Порог проверки — 11.
+# Дерево талантов добавляет к броску, не вместо занятия.
+CHECK_DC = 11
 CLASS_SKILL_TABLE = {
     "seeker": {
         "search": 12,
@@ -144,16 +157,24 @@ def roll_die(spec: str) -> int:
     return sum(random.randint(1, faces) for _ in range(max(1, n)))
 
 
-def skill_target(player, skill_id: str) -> int:
+def skill_base(player, skill_id: str) -> int:
     skills = getattr(player, "skills", None) or {}
     if skill_id in skills:
-        base = int(skills[skill_id])
-    else:
-        table = CLASS_SKILL_TABLE.get(getattr(player, "id", ""), {})
-        base = table[skill_id] if skill_id in table else 10
+        return int(skills[skill_id])
+    table = CLASS_SKILL_TABLE.get(getattr(player, "id", ""), {})
+    if skill_id in table:
+        return int(table[skill_id])
+    return 10
+
+
+def skill_modifier(player, skill_id: str) -> int:
     from engine.talent_system import skill_bonus
 
-    return max(6, min(16, base + skill_bonus(player, skill_id)))
+    return skill_base(player, skill_id) - 10 + skill_bonus(player, skill_id)
+
+
+def skill_dc(player=None, skill_id: str = "") -> int:
+    return CHECK_DC
 
 
 def will_target(player) -> int:
@@ -164,14 +185,21 @@ def will_target(player) -> int:
     return max(6, min(16, int(will)))
 
 
+def will_modifier(player) -> int:
+    return will_target(player) - 10
+
+
 def roll_skill(player, skill_id: str) -> RollResult:
-    """3d6 ≤ порог. 3–4 крит, 17–18 провал. Не d20."""
-    target = skill_target(player, skill_id)
+    """3d6 + модификатор ≥ 11. 17–18 крит, 3–4 провал. Не d20."""
     total = roll_3d6()
-    fumble = total >= 17
-    crit = total <= 4
-    success = (not fumble) and (crit or total <= target)
-    return RollResult(total=total, target=target, success=success, crit=crit, fumble=fumble)
+    modifier = skill_modifier(player, skill_id)
+    dc = CHECK_DC
+    fumble = total <= 4
+    crit = total >= 17
+    success = (not fumble) and (crit or (total + modifier) >= dc)
+    return RollResult(
+        total=total, target=dc, success=success, crit=crit, fumble=fumble
+    )
 
 
 def skill_phrase(check: RollResult, skill_id: str) -> str:
@@ -190,12 +218,15 @@ def skill_phrase(check: RollResult, skill_id: str) -> str:
 
 
 def roll_will(player) -> RollResult:
-    target = will_target(player)
     total = roll_3d6()
-    fumble = total >= 17
-    crit = total <= 4
-    success = (not fumble) and (crit or total <= target)
-    return RollResult(total=total, target=target, success=success, crit=crit, fumble=fumble)
+    modifier = will_modifier(player)
+    dc = CHECK_DC
+    fumble = total <= 4
+    crit = total >= 17
+    success = (not fumble) and (crit or (total + modifier) >= dc)
+    return RollResult(
+        total=total, target=dc, success=success, crit=crit, fumble=fumble
+    )
 
 
 def is_canon_loot(item) -> bool:

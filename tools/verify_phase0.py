@@ -189,7 +189,7 @@ def main():
         take_talent,
         visible_talents,
     )
-    from engine.rpg_system import skill_target
+    from engine.rpg_system import skill_modifier
 
     combat_n = sum(1 for node in TALENTS if node.branch == "combat")
     world_n = sum(1 for node in TALENTS if node.branch == "world")
@@ -199,6 +199,23 @@ def main():
         errors.append("дерево без ветвления")
     if any(node.verb == "see_trace" and node.effects.get("reroll") for node in TALENTS):
         errors.append("след снова бросает кость")
+    for node in TALENTS:
+        text = (node.description or "").lower()
+        if not any(
+            token in text
+            for token in (
+                "3d6",
+                "d20",
+                "+1",
+                "+2",
+                "75%",
+                "без броска",
+                "повторяется",
+            )
+        ):
+            errors.append(f"умение без правила: {node.id}")
+        if len(node.description or "") < 40:
+            errors.append(f"умение слишком короткое: {node.id}")
     rebel = players["rebel"]
     rebel.san = 80
     rebel.talents = []
@@ -210,17 +227,17 @@ def main():
         errors.append("бунтарь не берёт корень боя")
     if rebel.san >= 80:
         errors.append("талант не берёт волю")
-    after = skill_target(rebel, "break")
+    after = skill_modifier(rebel, "break")
     take_talent(rebel, "break_1", set())
-    if skill_target(rebel, "break") <= after:
-        errors.append("мирная/боевая ветка не меняет порог ломать")
+    if skill_modifier(rebel, "break") <= after:
+        errors.append("ветка ломать не меняет бросок")
     seeker = players["seeker"]
     seeker.san = 80
     seeker.talents = []
-    base_search = skill_target(seeker, "search")
+    base_search = skill_modifier(seeker, "search")
     take_talent(seeker, "search_1", set())
-    if skill_target(seeker, "search") <= base_search:
-        errors.append("мирная ветка не меняет обыск")
+    if skill_modifier(seeker, "search") <= base_search:
+        errors.append("ветка обыска не меняет бросок")
     if len(visible_talents(seeker)) <= 1:
         errors.append("после корня не открываются ветки")
     if "see_trace" in SKILL_PHRASES:
@@ -282,6 +299,21 @@ def main():
     host._toggle_equip(knife)
     if host.player.equipped_weapon_id or host.player.damage_die != UNARMED_DAMAGE_DIE:
         errors.append("нож не уходит в карман")
+    host.character_selected_index = 2
+    host.player.inventory = [knife]
+    host.player.equipped_weapon_id = None
+    host._refresh_player_weapon()
+    host._use_character_slot()
+    if host.player.equipped_weapon_id != "item_knife":
+        errors.append("слот руки не берёт нож")
+    host._use_character_slot()
+    if host.player.equipped_weapon_id:
+        errors.append("слот руки не кладёт нож в карман")
+    host.character_selected_index = 0
+    host.messages = []
+    host._use_character_slot()
+    if not any("пусто" in (msg or "").lower() for msg in host.messages):
+        errors.append(f"пустой слот без отказа: {host.messages}")
     host.player.inventory = []
     host.player.equipped_weapon_id = None
     host._refresh_player_weapon()
@@ -339,6 +371,12 @@ def main():
         errors.append("нет вида места")
     if "в руке" not in renderer_src:
         errors.append("HUD не показывает руку")
+    if "def draw_character" not in renderer_src or "НА СЕБЕ" not in renderer_src:
+        errors.append("нет окна персонажа со слотами")
+    if "EQUIP_SLOTS" not in engine_src or "is_character_open" not in engine_src:
+        errors.append("слоты экипировки не открываются")
+    if "KeySym.C" not in engine_src:
+        errors.append("нет клавиши окна персонажа")
     if "temporary_buff" not in engine_src:
         errors.append("бафф предмета не идёт в эффекты")
     rebel = players["rebel"]
@@ -477,6 +515,7 @@ def main():
     engine.showing_help = False
     engine.is_inventory_open = False
     engine.is_talents_open = False
+    engine.is_character_open = False
     engine.oil_overlay = None
     engine.inventory_selected_index = 0
     engine.current_enemy = None
@@ -699,6 +738,13 @@ def main():
     kind, _text = de.advance()
     if kind != "choices" or len(de.get_choices()) != 3:
         errors.append(f"выбор Настасьи: {kind} / {de.get_choices()}")
+    nas_opts = de.get_choices()
+    exit_c = next((c for c in nas_opts if "выйти" in c.lower()), "")
+    seen_c = next((c for c in nas_opts if "видел" in c.lower()), "")
+    if "(долг" not in exit_c.lower() or "настась" not in exit_c.lower():
+        errors.append(f"выход Настасье без скобок долга: {exit_c}")
+    if "воля" not in seen_c.lower() or "-6" not in seen_c:
+        errors.append(f"признание теней без воли в скобках: {seen_c}")
     de_seek = DialogueEngine(db)
     if de_seek.start_dialogue("dialogue_nastasya_intro", flags={"class_seeker"}, san=80):
         de_seek.present()
@@ -797,13 +843,18 @@ def main():
             continue
         de_r.present()
         kind, _text = de_r.advance()
-        if kind != "choices" or len(de_r.get_choices()) != 3:
+        n_repeat = len(de_r.get_choices())
+        want = 4 if repeat_id == "dialogue_nastasya_repeat" else 3
+        if kind != "choices" or n_repeat != want:
             errors.append(f"повтор без выбора: {repeat_id} {kind} / {de_r.get_choices()}")
 
     stay_repeat = DialogueEngine(db)
     if stay_repeat.start_dialogue("dialogue_shpilkin_repeat", flags=set(), san=70):
         stay_repeat.present()
         stay_repeat.advance()
+        mix = next((c for c in stay_repeat.get_choices() if "микстур" in c.lower()), "")
+        if "воля" not in mix.lower() or "остаться" not in mix.lower():
+            errors.append(f"микстура без ставки в скобках: {mix}")
         stay_repeat.choose(1)
         fin_stay = stay_repeat.finish()
         if fin_stay.get("ending_id") != "stay":
@@ -976,9 +1027,29 @@ def main():
 
     import engine.rpg_system as rpg
 
+    def _talk_to(dialogue_id, needle, flags=None):
+        de = DialogueEngine(db)
+        if not de.start_dialogue(
+            dialogue_id,
+            flags=flags or set(),
+            san=70,
+            player=players["seeker"],
+        ):
+            return None, None
+        de.present()
+        for _ in range(4):
+            if de.get_choices():
+                break
+            kind, _text = de.advance()
+            if kind in ("end", None):
+                break
+        choices = de.get_choices()
+        idx = next((i for i, line in enumerate(choices) if needle in line.lower()), None)
+        return de, idx
+
     old_talk = rpg.roll_3d6
     try:
-        rpg.roll_3d6 = lambda: 18
+        rpg.roll_3d6 = lambda: 3
         held = {"archive_name", "guilt_admitted"}
         de_lie = DialogueEngine(db)
         if not de_lie.start_dialogue(
@@ -999,6 +1070,8 @@ def main():
                 _kind, text_lie = de_lie.choose(idx)
                 if "халат не документ" not in (text_lie or "").lower():
                     errors.append(f"провал речи постовому не сменил ответ: {text_lie}")
+                if "свисток пока молчит" in (text_lie or "").lower():
+                    errors.append(f"провал речи совпал с успехом: {text_lie}")
                 state = de_lie.current_dialogue
                 if state and not held <= state.flags:
                     errors.append(f"провал речи снял правду: {sorted(state.flags)}")
@@ -1025,6 +1098,8 @@ def main():
                 _kind, text_ivan = de_ivan.choose(idx)
                 if "чужое имя" not in (text_ivan or "").lower():
                     errors.append(f"провал Ивана не сменил ответ: {text_ivan}")
+                if "иван так иван" in (text_ivan or "").lower():
+                    errors.append(f"провал Ивана совпал с успехом: {text_ivan}")
                 if (
                     de_ivan.current_dialogue
                     and "archive_name" not in de_ivan.current_dialogue.flags
@@ -1033,7 +1108,43 @@ def main():
                 fin_ivan = de_ivan.finish()
                 if "archive_name" in (fin_ivan.get("flags") or []):
                     errors.append(f"Иван выдал archive_name: {fin_ivan}")
-        rpg.roll_3d6 = lambda: 3
+        de_luk_fail, idx = _talk_to("dialogue_lukin_intro", "жилец")
+        if de_luk_fail is None:
+            errors.append("не стартует Лукин для провала речи")
+        elif idx is None:
+            errors.append("нет «жилец» у Лукина")
+        else:
+            _kind, text_luk_fail = de_luk_fail.choose(idx)
+            if "не верю-с" not in (text_luk_fail or "").lower():
+                errors.append(f"провал Лукина не сменил ответ: {text_luk_fail}")
+            if "графы считаю" in (text_luk_fail or "").lower():
+                errors.append(f"провал Лукина совпал с успехом: {text_luk_fail}")
+            de_luk_fail.finish()
+        de_doc_fail, idx = _talk_to("dialogue_shpilkin_intro", "не болен")
+        if de_doc_fail is None:
+            errors.append("не стартует Шпилькин для провала речи")
+        elif idx is None:
+            errors.append("нет отказа у Шпилькина")
+        else:
+            _kind, text_doc_fail = de_doc_fail.choose(idx)
+            if "все так говорят" not in (text_doc_fail or "").lower():
+                errors.append(f"провал Шпилькина не сменил ответ: {text_doc_fail}")
+            if "капель не берите" in (text_doc_fail or "").lower():
+                errors.append(f"провал Шпилькина совпал с успехом: {text_doc_fail}")
+            de_doc_fail.finish()
+        de_nas_fail, idx = _talk_to("dialogue_nastasya_intro", "это бред")
+        if de_nas_fail is None:
+            errors.append("не стартует Настасья для провала речи")
+        elif idx is None:
+            errors.append("нет бреда у Настасьи")
+        else:
+            _kind, text_nas_fail = de_nas_fail.choose(idx)
+            if "это не бред" not in (text_nas_fail or "").lower():
+                errors.append(f"провал Настасьи не сменил ответ: {text_nas_fail}")
+            if "назовём бредом" in (text_nas_fail or "").lower():
+                errors.append(f"провал Настасьи совпал с успехом: {text_nas_fail}")
+            de_nas_fail.finish()
+        rpg.roll_3d6 = lambda: 18
         de_ok = DialogueEngine(db)
         if de_ok.start_dialogue(
             "dialogue_watchman_intro",
@@ -1046,13 +1157,109 @@ def main():
             choices = de_ok.get_choices()
             idx = next((i for i, line in enumerate(choices) if "болен" in line.lower()), 0)
             _kind, text_ok = de_ok.choose(idx)
-            if "больных не выпускают" not in (text_ok or "").lower():
+            if "свисток пока молчит" not in (text_ok or "").lower():
                 errors.append(f"успех речи постовому сломан: {text_ok}")
+            if "халат не документ" in (text_ok or "").lower():
+                errors.append(f"успех речи совпал с провалом: {text_ok}")
             de_ok.finish()
         else:
             errors.append("не стартует постовой для успеха речи")
+        de_ivan_ok = DialogueEngine(db)
+        if de_ivan_ok.start_dialogue(
+            "dialogue_beggar_intro",
+            flags=set(),
+            san=70,
+            player=players["seeker"],
+        ):
+            de_ivan_ok.present()
+            de_ivan_ok.advance()
+            choices = de_ivan_ok.get_choices()
+            idx = next((i for i, line in enumerate(choices) if "иван" in line.lower()), 0)
+            _kind, text_ivan_ok = de_ivan_ok.choose(idx)
+            if "иван так иван" not in (text_ivan_ok or "").lower():
+                errors.append(f"успех Ивана сломан: {text_ivan_ok}")
+            if "чужое имя" in (text_ivan_ok or "").lower():
+                errors.append(f"успех Ивана совпал с провалом: {text_ivan_ok}")
+            de_ivan_ok.finish()
+        else:
+            errors.append("не стартует нищий для успеха речи")
+        de_luk_ok = DialogueEngine(db)
+        if de_luk_ok.start_dialogue(
+            "dialogue_lukin_intro",
+            flags=set(),
+            san=70,
+            player=players["seeker"],
+        ):
+            de_luk_ok.present()
+            de_luk_ok.advance()
+            choices = de_luk_ok.get_choices()
+            idx = next((i for i, line in enumerate(choices) if "жилец" in line.lower()), 0)
+            _kind, text_luk_ok = de_luk_ok.choose(idx)
+            if "шкафу" not in (text_luk_ok or "").lower():
+                errors.append(f"успех Лукина сломан: {text_luk_ok}")
+            if "не верю-с" in (text_luk_ok or "").lower():
+                errors.append(f"успех Лукина совпал с провалом: {text_luk_ok}")
+            de_luk_ok.finish()
+        else:
+            errors.append("не стартует Лукин для успеха речи")
+        de_doc_ok, idx = _talk_to("dialogue_shpilkin_intro", "не болен")
+        if de_doc_ok is None:
+            errors.append("не стартует Шпилькин для успеха речи")
+        elif idx is None:
+            errors.append("нет отказа у Шпилькина для успеха")
+        else:
+            _kind, text_doc_ok = de_doc_ok.choose(idx)
+            if "капель не берите" not in (text_doc_ok or "").lower():
+                errors.append(f"успех Шпилькина сломан: {text_doc_ok}")
+            if "все так говорят" in (text_doc_ok or "").lower():
+                errors.append(f"успех Шпилькина совпал с провалом: {text_doc_ok}")
+            de_doc_ok.finish()
+        de_nas_ok, idx = _talk_to("dialogue_nastasya_intro", "это бред")
+        if de_nas_ok is None:
+            errors.append("не стартует Настасья для успеха речи")
+        elif idx is None:
+            errors.append("нет бреда у Настасьи для успеха")
+        else:
+            _kind, text_nas_ok = de_nas_ok.choose(idx)
+            if "назовём бредом" not in (text_nas_ok or "").lower():
+                errors.append(f"успех Настасьи сломан: {text_nas_ok}")
+            if "это не бред" in (text_nas_ok or "").lower():
+                errors.append(f"успех Настасьи совпал с провалом: {text_nas_ok}")
+            de_nas_ok.finish()
     finally:
         rpg.roll_3d6 = old_talk
+
+    de_tag = DialogueEngine(db)
+    if de_tag.start_dialogue(
+        "dialogue_watchman_intro",
+        flags={"class_mystic"},
+        san=70,
+        player=players["seeker"],
+    ):
+        de_tag.present()
+        de_tag.advance()
+        tagged = de_tag.get_choices()
+        lie = next((line for line in tagged if "болен" in line.lower()), "")
+        hear = next((line for line in tagged if "свисток" in line.lower()), "")
+        plain = next((line for line in tagged if "документов нет" in line.lower()), "")
+        if "говорить" not in lie.lower() or "3d6" not in lie.lower() or "ложь" not in lie.lower():
+            errors.append(f"ложь постовому без метки умения: {lie}")
+        if "слышать" not in hear.lower() or "3d6" not in hear.lower():
+            errors.append(f"свисток без метки слуха: {hear}")
+        if "ложь" in hear.lower():
+            errors.append(f"свисток помечен как ложь: {hear}")
+        if "3d6" in plain.lower() or "ложь" in plain.lower():
+            errors.append(f"признание не должно быть проверкой: {plain}")
+        rpg.roll_3d6 = lambda: 18
+        idx = next((i for i, line in enumerate(tagged) if "болен" in line.lower()), 0)
+        de_tag.choose(idx)
+        banner = de_tag.get_check_banner()
+        if "говорить" not in banner.lower() or "успех" not in banner.lower() or "≥" not in banner:
+            errors.append(f"после лжи нет строки броска: {banner}")
+        de_tag.finish()
+    else:
+        errors.append("не стартует постовой для меток умения")
+    rpg.roll_3d6 = old_talk
 
     from engine.dialogue_keys import MAX_DIALOGUE_CHOICES, choice_index_from_key
 
@@ -1154,10 +1361,36 @@ def main():
         if kind_n != "text" or "настась" not in (text_n or "").lower() and "мне" not in (text_n or "").lower():
             errors.append(f"Настасья не слышит свой долг: {kind_n} {text_n}")
         de_nface.advance()
-        if not any("выход" in c.lower() for c in de_nface.get_choices()):
+        if not any("выйти" in c.lower() or "выход" in c.lower() for c in de_nface.get_choices()):
             errors.append(f"нет реплики про выход Настасье: {de_nface.get_choices()}")
     else:
         errors.append("не стартует повтор Настасьи с долгом выхода")
+
+    de_late = DialogueEngine(db)
+    if de_late.start_dialogue("dialogue_nastasya_repeat", flags=set(), san=70):
+        de_late.present()
+        de_late.advance()
+        late_opts = de_late.get_choices()
+        idx = next(
+            (
+                i
+                for i, line in enumerate(late_opts)
+                if "выйти" in line.lower() or "долг вам" in line.lower()
+            ),
+            None,
+        )
+        if idx is None:
+            errors.append(f"на повторе Настасьи без долга нет выхода: {late_opts}")
+        else:
+            late_line = late_opts[idx]
+            if "(долг" not in late_line.lower() or "настась" not in late_line.lower():
+                errors.append(f"поздний выход без скобок долга: {late_line}")
+            de_late.choose(idx)
+            fin_late = de_late.finish()
+            if "nastasya_escape" not in (fin_late.get("flags") or []):
+                errors.append(f"поздний долг Настасье не ставится: {fin_late}")
+    else:
+        errors.append("не стартует повтор Настасьи без долга")
 
     de_h = DialogueEngine(db)
     if de_h.start_dialogue("dialogue_shpilkin_repeat", flags={"archive_name"}, san=70):
@@ -1375,7 +1608,7 @@ def main():
 
     old_3d6 = rpg.roll_3d6
     try:
-        rpg.roll_3d6 = lambda: 18
+        rpg.roll_3d6 = lambda: 3
         if engine.quest_system and "letter_1" in engine.quest_system.found_notes:
             engine.quest_system.found_notes.remove("letter_1")
         engine._load_map("hospital_floor_2")
@@ -1413,7 +1646,7 @@ def main():
         for flag in list(engine.flags):
             if str(flag).startswith("searched:hospital_floor_1:42:4"):
                 engine.flags.discard(flag)
-        rpg.roll_3d6 = lambda: 3
+        rpg.roll_3d6 = lambda: 18
         engine.messages = []
         engine._search_container(42, 4)
         crit_search = " ".join(engine.messages)
@@ -1421,7 +1654,7 @@ def main():
             errors.append("крит обыска врёт про почерк")
         if "шов" not in crit_search.lower():
             errors.append(f"крит обыска без фразы: {crit_search}")
-        rpg.roll_3d6 = lambda: 3
+        rpg.roll_3d6 = lambda: 18
         amount, _phrase = rpg.san_loss_for("note_canal", engine.player)
         if amount != 0:
             errors.append(f"успех воли на канал теряет {amount}")
@@ -1581,7 +1814,7 @@ def main():
 
     old_hear = rpg_hear.roll_3d6
     try:
-        rpg_hear.roll_3d6 = lambda: 3
+        rpg_hear.roll_3d6 = lambda: 18
         engine.player.id = "mystic"
         engine.flags.discard("mystic_trace")
         engine.fired_triggers = set()
@@ -1590,7 +1823,7 @@ def main():
         engine._try_move(0, -1)
         if "mystic_trace" not in engine.flags:
             errors.append("мистик не оставляет след у лампы")
-        rpg_hear.roll_3d6 = lambda: 18
+        rpg_hear.roll_3d6 = lambda: 3
         engine.flags.discard("mystic_trace")
         engine.fired_triggers = set()
         engine.player.x, engine.player.y = 18, 2
@@ -1632,7 +1865,7 @@ def main():
                 gained = set(fin_wh.get("flags") or [])
                 if "archive_name" in gained or "guilt_admitted" in gained:
                     errors.append(f"свисток выдал правду: {fin_wh}")
-        rpg_hear.roll_3d6 = lambda: 3
+        rpg_hear.roll_3d6 = lambda: 18
         de_wh_ok = DialogueEngine(db)
         if de_wh_ok.start_dialogue(
             "dialogue_watchman_intro",
@@ -1659,7 +1892,7 @@ def main():
         engine.fired_triggers = set()
         engine._load_map("hospital_floor_1")
         engine.player.x, engine.player.y = 18, 2
-        rpg_hear.roll_3d6 = lambda: 3
+        rpg_hear.roll_3d6 = lambda: 18
         engine._try_move(0, -1)
         if "mystic_trace" not in engine.flags:
             errors.append("талант слуха не работает у лампы без занятия мистика")
@@ -1680,7 +1913,7 @@ def main():
         if not shadow:
             errors.append("в подвале нет тени для красться")
         else:
-            rpg_sneak.roll_3d6 = lambda: 3
+            rpg_sneak.roll_3d6 = lambda: 18
             engine.state = _GameState.PLAYING
             engine.current_enemy = None
             engine.player.x, engine.player.y = shadow.x - 1, shadow.y
@@ -1694,7 +1927,7 @@ def main():
                 )
             if "мимо" not in " ".join(engine.messages).lower():
                 errors.append(f"успех красться без фразы: {engine.messages}")
-            rpg_sneak.roll_3d6 = lambda: 18
+            rpg_sneak.roll_3d6 = lambda: 3
             engine.state = _GameState.PLAYING
             engine.current_enemy = None
             engine.player.x, engine.player.y = shadow.x - 1, shadow.y
@@ -1729,7 +1962,7 @@ def main():
     old_break = rpg_break.roll_3d6
     old_break_id = engine.player.id
     try:
-        rpg_break.roll_3d6 = lambda: 3
+        rpg_break.roll_3d6 = lambda: 18
         engine.player.id = "rebel"
         engine.flags.discard("broke_door")
         engine._load_map("hospital_floor_1")
@@ -1742,7 +1975,7 @@ def main():
             errors.append("нет флага сломанной двери")
         if engine.current_map[3][12] != wall or wall == "'":
             errors.append("плечо сломало стену канона")
-        rpg_break.roll_3d6 = lambda: 18
+        rpg_break.roll_3d6 = lambda: 3
         engine.flags.discard("broke_door")
         engine.current_map[2][12] = "d"
         engine._try_open_door(12, 2, "d")
@@ -1853,6 +2086,10 @@ def main():
         ROOT / "engine" / "renderer.py"
     ).read_text(encoding="utf-8"):
         errors.append("нет тетради талантов")
+    if "is_character_open" not in ge_src or "НА СЕБЕ" not in (
+        ROOT / "engine" / "renderer.py"
+    ).read_text(encoding="utf-8"):
+        errors.append("нет окна на себе")
 
     from engine.constants import BRED_MAP_ID
     from engine.music import MAP_TRACKS, resolve_source
@@ -1890,6 +2127,24 @@ def main():
         encoding="utf-8"
     ):
         errors.append("портрет снова растягивается в клетку")
+    if "_wrap_choice" not in (ROOT / "engine" / "renderer.py").read_text(
+        encoding="utf-8"
+    ):
+        errors.append("длинный ответ снова режется троеточием")
+    long_talk = (
+        "[Говорить: 3d6+0 ≥ 11] [ложь] "
+        "Помогите выйти отсюда. Прошу. Выход, слышите? Мне нужно слышать это слово целиком."
+    )
+    wrapped_talk = engine.renderer._wrap_choice(long_talk, 0, 42)
+    talk_blob = " ".join(wrapped_talk)
+    if "слышать это слово целиком" not in talk_blob:
+        errors.append(f"длинный ответ потерял хвост: {wrapped_talk}")
+    if any(row.rstrip().endswith("...") for row in wrapped_talk):
+        errors.append(f"длинный ответ снова с троеточием: {wrapped_talk}")
+    if "говорить" not in talk_blob.lower() or "ложь" not in talk_blob.lower():
+        errors.append(f"метка умения пропала при переносе: {wrapped_talk}")
+    if len(wrapped_talk) < 2:
+        errors.append(f"длинный ответ не перенёсся на строки: {wrapped_talk}")
 
     saved_talk = (
         engine.current_map_id,
@@ -1968,6 +2223,7 @@ def main():
     engine.showing_help = False
     engine.is_inventory_open = False
     engine.is_talents_open = False
+    engine.is_character_open = False
     engine.oil_overlay = None
     engine._reset_realtime()
     engine._compute_fov()

@@ -8,6 +8,7 @@ import tcod
 from tcod import libtcodpy
 
 from engine.constants import (
+    EQUIP_SLOTS,
     LEGEND_WIDTH,
     SCREEN_HEIGHT,
     SCREEN_WIDTH,
@@ -564,7 +565,7 @@ class Renderer:
                     if getattr(item, "id", None) == eq:
                         hand = getattr(item, "name", "нож") or "нож"
                         break
-            hint = f"в руке {hand} · ход · e стол · i карман · t тетрадь · ? поля"
+            hint = f"в руке {hand} · ход · e стол · i карман · t тетрадь · c на себе · ? поля"
         self.console.print(2, self.screen_height - 1, hint[:inner], fg=COLOR_MUTED)
 
     def draw_quests(self, quest_descriptions: List[str]):
@@ -572,7 +573,7 @@ class Renderer:
         return
 
     def draw_dialogue(self, text: str, speaker_name: str = '', choices=None,
-                      portrait_id: str = ''):
+                      portrait_id: str = '', check_line: str = ''):
         """Окно диалога, при необходимости — бюст слева и варианты ответа."""
         if not text and not choices:
             return
@@ -585,28 +586,55 @@ class Renderer:
             show_face = False
 
         box_width = self.screen_width - 4
-        extra = max(0, len(choices))
-        box_height = 5 + extra
         text_x = 4
         wrap_width = box_width - 4
         if show_face:
-            box_height = max(box_height, PORTRAIT_ROWS + 2)
             text_x = 4 + PORTRAIT_COLS + 1
             wrap_width = box_width - PORTRAIT_COLS - 3
-        box_y = max(2, self.map_height - box_height - 1)
-        self._draw_box(2, box_y, box_width, box_height, title=speaker_name)
+        wrap_width = max(12, wrap_width)
 
         wrapped = self._wrap_text(text or '', wrap_width)
-        text_lines = max(2, box_height - 3 - extra) if show_face else 2
-        for i, line in enumerate(wrapped[:text_lines]):
-            self.console.print(text_x, box_y + 1 + i, line, fg=COLOR_DIALOGUE)
+        banner_lines = self._wrap_text(check_line, wrap_width) if check_line else []
+        choice_blocks = [
+            self._wrap_choice(choice, i, wrap_width) for i, choice in enumerate(choices)
+        ]
+        interior = len(wrapped) + len(banner_lines) + sum(len(block) for block in choice_blocks)
+        if interior < 1:
+            interior = 1
+        box_height = interior + 2
+        if show_face:
+            box_height = max(box_height, PORTRAIT_ROWS + 2)
+        max_h = max(5, self.screen_height - 3)
+        box_height = min(box_height, max_h)
+        box_y = max(1, self.map_height - box_height - 1)
+        if box_y + box_height >= self.screen_height:
+            box_y = max(1, self.screen_height - box_height - 1)
+
+        self._draw_box(2, box_y, box_width, box_height, title=speaker_name)
+
+        y = box_y + 1
+        bottom = box_y + box_height - 2
+        for line in wrapped:
+            if y > bottom:
+                break
+            self.console.print(text_x, y, line[:wrap_width], fg=COLOR_DIALOGUE)
+            y += 1
+        for line in banner_lines:
+            if y > bottom:
+                break
+            self.console.print(text_x, y, line[:wrap_width], fg=COLOR_LAMP)
+            y += 1
+        for i, block in enumerate(choice_blocks):
+            stripped = (choices[i] or "").lstrip()
+            tagged = stripped.startswith("[") or stripped.startswith("(")
+            fg = COLOR_LAMP if tagged else COLOR_DIALOGUE
+            for line in block:
+                if y > bottom:
+                    break
+                self.console.print(text_x, y, line[:wrap_width], fg=fg)
+                y += 1
 
         if choices:
-            for i, choice in enumerate(choices):
-                label = f"{i + 1}. {choice}"
-                if len(label) > wrap_width - 2:
-                    label = label[: wrap_width - 5] + "..."
-                self.console.print(text_x, box_y + box_height - 2 - extra + i, label, fg=COLOR_DIALOGUE)
             hint = f"[1-{len(choices)} — ответ]"
         else:
             hint = "[Space — далее]"
@@ -617,6 +645,72 @@ class Renderer:
             self._pending_portraits.append(
                 (portrait_id, (3, box_y + 1, PORTRAIT_COLS, PORTRAIT_ROWS))
             )
+
+    def _choice_tokens(self, text: str) -> List[str]:
+        """Слова и метки [...] / (...) не рвать посередине."""
+        tokens = []
+        i = 0
+        n = len(text or "")
+        while i < n:
+            if text[i].isspace():
+                i += 1
+                continue
+            if text[i] in "[(":
+                close = "]" if text[i] == "[" else ")"
+                end = text.find(close, i + 1)
+                if end < 0:
+                    tokens.append(text[i:])
+                    break
+                tokens.append(text[i : end + 1])
+                i = end + 1
+                continue
+            j = i + 1
+            while j < n and (not text[j].isspace()) and text[j] not in "[(":
+                j += 1
+            tokens.append(text[i:j])
+            i = j
+        return tokens
+
+    def _wrap_tokens(self, tokens: List[str], width: int) -> List[str]:
+        width = max(1, width)
+        lines = []
+        current = []
+        current_len = 0
+        for token in tokens:
+            if len(token) > width:
+                if current:
+                    lines.append(" ".join(current))
+                    current = []
+                    current_len = 0
+                for start in range(0, len(token), width):
+                    chunk = token[start : start + width]
+                    if len(chunk) == width:
+                        lines.append(chunk)
+                    else:
+                        current = [chunk]
+                        current_len = len(chunk)
+                continue
+            add = len(token) if not current else len(token) + 1
+            if current and current_len + add > width:
+                lines.append(" ".join(current))
+                current = [token]
+                current_len = len(token)
+            else:
+                current.append(token)
+                current_len += add
+        if current:
+            lines.append(" ".join(current))
+        return lines
+
+    def _wrap_choice(self, choice: str, index: int, width: int) -> List[str]:
+        """Полный ответ с переносом. Метки не режем троеточием."""
+        head = f"{index + 1}. "
+        body_width = max(8, width - len(head))
+        wrapped = self._wrap_tokens(self._choice_tokens(choice), body_width)
+        if not wrapped:
+            wrapped = [""]
+        pad = " " * len(head)
+        return [head + wrapped[0]] + [pad + line for line in wrapped[1:]]
 
     def _hp_bar(self, current: int, maximum: int, width: int = 12) -> str:
         maximum = max(1, int(maximum or 1))
@@ -1073,6 +1167,7 @@ class Renderer:
             "a — удар рядом · в срыве: 1 2 3",
             "r — бумага · i — карман халата",
             "t — тетрадь талантов (бой и мир)",
+            "c — на себе: халат, рука, слоты",
             "при переходе — вид места · в кармане — осмотр и рука",
             "F5 — записать ночь · F9 — вернуться",
             "F4 — буквы / картинки · M — музыка",
@@ -1200,6 +1295,110 @@ class Renderer:
             fg=COLOR_MUTED,
         )
 
+    def draw_character(self, player, selected_index: int = 0):
+        """Халат и слоты. Кулак, пока нож не в руке. Пустые ждут вещь."""
+        occupation = getattr(player, "class_name", None) or "без занятия"
+        box_width = 72
+        box_height = 24
+        box_x = (self.screen_width - box_width) // 2
+        box_y = max(1, (self.screen_height - box_height) // 2)
+        self._draw_box(
+            box_x, box_y, box_width, box_height,
+            title=f"НА СЕБЕ · {occupation}",
+            bg=COLOR_CHART_BG,
+        )
+        self._pending_portraits.append(
+            (
+                getattr(player, "id", "") or "",
+                (box_x + 3, box_y + 2, PORTRAIT_COLS, PORTRAIT_ROWS),
+            )
+        )
+        stats = getattr(player, "stats", None) or {}
+        names = (
+            ("STR", "сила"),
+            ("DEX", "ловкость"),
+            ("CON", "тело"),
+            ("INT", "ум"),
+            ("CHA", "речь"),
+            ("WILL", "воля"),
+        )
+        stat_y = box_y + 2 + PORTRAIT_ROWS + 1
+        for i, (key, rus) in enumerate(names):
+            value = int(stats.get(key, 10) or 10)
+            self.console.print(
+                box_x + 3,
+                stat_y + i,
+                f"{rus} {value}",
+                fg=COLOR_TEXT,
+            )
+        die = getattr(player, "damage_die", None) or UNARMED_DAMAGE_DIE
+        ac = getattr(player, "armor_class", 10)
+        self.console.print(
+            box_x + 3, stat_y + 6, f"удар {die} · броня {ac}", fg=COLOR_DIALOGUE
+        )
+
+        fills = []
+        for slot_id, slot_name in EQUIP_SLOTS:
+            fills.append((slot_id, slot_name, self._equip_slot_fill(player, slot_id)))
+        layout = {
+            "head": (box_x + 42, box_y + 2),
+            "body": (box_x + 32, box_y + 6),
+            "hand": (box_x + 50, box_y + 6),
+            "belt": (box_x + 42, box_y + 10),
+        }
+        selected = min(max(0, selected_index), len(fills) - 1)
+        for i, (slot_id, slot_name, fill) in enumerate(fills):
+            sx, sy = layout.get(slot_id, (box_x + 42, box_y + 2 + i * 4))
+            self._draw_equip_slot(
+                sx, sy, 16, slot_name, fill, selected=i == selected
+            )
+
+        slot_id, slot_name, fill = fills[selected]
+        if slot_id == "hand" and fill not in ("кулак", "пусто"):
+            note = f"{slot_name}: {fill}. e — в карман."
+        elif slot_id == "hand":
+            note = "рука: кулак 1d3. e — взять нож из кармана, если он там."
+        elif slot_id == "body":
+            note = "халат клиники. Не снимают."
+        else:
+            note = f"{slot_name}: пусто. Пока нечего надеть."
+        wrap = self._wrap_text(note, box_width - 6)
+        foot = box_y + box_height - 3
+        for i, line in enumerate(wrap[:2]):
+            self.console.print(box_x + 3, foot + i, line[: box_width - 6], fg=COLOR_TEXT)
+        self.console.print(
+            box_x + 3,
+            box_y + box_height - 1,
+            "↑/↓ слот · e взять / снять · c закрыть",
+            fg=COLOR_MUTED,
+        )
+
+    def _equip_slot_fill(self, player, slot_id: str) -> str:
+        if slot_id == "body":
+            return "халат клиники"
+        if slot_id == "hand":
+            equipped = getattr(player, "equipped_weapon_id", None)
+            if equipped:
+                for item in getattr(player, "inventory", None) or []:
+                    if getattr(item, "id", None) == equipped:
+                        return getattr(item, "name", "нож") or "нож"
+            return "кулак"
+        return "пусто"
+
+    def _draw_equip_slot(self, x, y, width, title, fill, selected=False):
+        inner = max(6, width - 2)
+        label = f" {title} "
+        if len(label) > inner:
+            label = label[:inner]
+        color = COLOR_LAMP if selected else COLOR_DIALOGUE
+        muted = COLOR_LAMP if selected else COLOR_MUTED
+        top = "┌" + label + "─" * (inner - len(label)) + "┐"
+        body = "│ " + (fill or "пусто")[: inner - 1].ljust(inner - 1) + "│"
+        bot = "└" + "─" * inner + "┘"
+        self.console.print(x, y, top, fg=color)
+        self.console.print(x, y + 1, body, fg=muted if fill == "пусто" else color)
+        self.console.print(x, y + 2, bot, fg=color)
+
     def draw_oil_overlay(self, overlay):
         """Вид места при входе или вещи при осмотре. Карта .txt под холстом."""
         kind = (overlay or {}).get("kind") or "place"
@@ -1250,8 +1449,9 @@ class Renderer:
         )
 
         nodes = visible_talents(player)
+        desc_lines = 4
         box_width = 72
-        box_height = min(28, max(12, len(nodes) + 8))
+        box_height = min(28, max(16, len(nodes) + 6 + desc_lines))
         box_x = (self.screen_width - box_width) // 2
         box_y = max(1, (self.screen_height - box_height) // 2)
         occupation = getattr(player, "class_name", None) or "без занятия"
@@ -1264,13 +1464,14 @@ class Renderer:
         head = f"воля {san} · после пометки не ниже {SAN_FLOOR}"
         self.console.print(box_x + 2, box_y + 2, head[: box_width - 4], fg=COLOR_SANITY)
         class_id = getattr(player, "id", "")
+        list_bottom = box_y + box_height - 2 - desc_lines
         if not nodes:
             self.console.print(
                 box_x + 4, box_y + 4, "Тетрадь пуста. Странно.", fg=COLOR_MUTED
             )
         for i, node in enumerate(nodes):
             y = box_y + 4 + i
-            if y >= box_y + box_height - 3:
+            if y >= list_bottom:
                 break
             taken = has_talent(player, node.id)
             cost = san_cost_for(node, class_id)
@@ -1296,13 +1497,14 @@ class Renderer:
             line = f"{mark} [{branch}] {node.name} — {tail}"
             self.console.print(box_x + 2, y, line[: box_width - 4], fg=color)
         if nodes and 0 <= selected_index < len(nodes):
-            desc = nodes[selected_index].description
-            self.console.print(
-                box_x + 2,
-                box_y + box_height - 3,
-                desc[: box_width - 4],
-                fg=COLOR_TEXT,
+            wrapped = self._wrap_text(
+                nodes[selected_index].description, box_width - 4
             )
+            start_y = box_y + box_height - 1 - desc_lines
+            for j, text in enumerate(wrapped[:desc_lines]):
+                self.console.print(
+                    box_x + 2, start_y + j, text[: box_width - 4], fg=COLOR_TEXT
+                )
         self.console.print(
             box_x + 2,
             box_y + box_height - 1,
