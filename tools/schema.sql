@@ -33,7 +33,7 @@ CREATE TABLE characters (
 -- ============================================================
 CREATE TABLE items (
     id TEXT PRIMARY KEY,
-    type TEXT CHECK(type IN ('weapon', 'consumable', 'quest', 'note', 'key')),
+    type TEXT CHECK(type IN ('weapon', 'consumable', 'quest', 'note', 'key', 'clothing')),
     name TEXT NOT NULL,
     description TEXT,
     
@@ -46,7 +46,9 @@ CREATE TABLE items (
     color TEXT DEFAULT '#FFFFFF',
     
     is_quest_item INTEGER DEFAULT 0,
-    use_effect TEXT
+    use_effect TEXT,
+    content TEXT DEFAULT '',
+    equip_slot TEXT
 );
 
 -- ============================================================

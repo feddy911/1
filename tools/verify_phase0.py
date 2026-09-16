@@ -293,15 +293,28 @@ def main():
     if host.player.damage_die != UNARMED_DAMAGE_DIE:
         errors.append("кулак не 1d3")
     host.player.inventory = [knife]
+    host.player.equipped = {}
     host._toggle_equip(knife)
     if host.player.equipped_weapon_id != "item_knife" or host.player.damage_die != "1d6":
         errors.append("нож нельзя взять в руку")
     host._toggle_equip(knife)
     if host.player.equipped_weapon_id or host.player.damage_die != UNARMED_DAMAGE_DIE:
         errors.append("нож не уходит в карман")
-    host.character_selected_index = 2
+    from engine.equipment import EQUIP_SLOTS, SLOT_INDEX
+
+    slot_ids = [slot_id for slot_id, _name in EQUIP_SLOTS]
+    for needed in ("head", "body", "main_hand", "off_hand", "legs", "feet"):
+        if needed not in slot_ids:
+            errors.append(f"нет слота {needed}")
+    robe = EntityFactory(db).create_item("item_robe")
+    coat = EntityFactory(db).create_item("item_coat")
+    if not robe or robe.type != "clothing" or (robe.equip_slot or "") != "body":
+        errors.append("халат не одежда на тело")
+    if not coat or coat.type != "clothing" or (coat.equip_slot or "") != "body":
+        errors.append("сюртук не одежда на тело")
+    host.character_selected_index = SLOT_INDEX["main_hand"]
     host.player.inventory = [knife]
-    host.player.equipped_weapon_id = None
+    host.player.equipped = {}
     host._refresh_player_weapon()
     host._use_character_slot()
     if host.player.equipped_weapon_id != "item_knife":
@@ -309,11 +322,39 @@ def main():
     host._use_character_slot()
     if host.player.equipped_weapon_id:
         errors.append("слот руки не кладёт нож в карман")
-    host.character_selected_index = 0
+    host.character_selected_index = SLOT_INDEX["head"]
     host.messages = []
     host._use_character_slot()
     if not any("пусто" in (msg or "").lower() for msg in host.messages):
         errors.append(f"пустой слот без отказа: {host.messages}")
+    host.player.inventory = [robe, coat]
+    host.player.equipped = {}
+    host.character_selected_index = SLOT_INDEX["body"]
+    host._use_character_slot()
+    if (host.player.equipped or {}).get("body") != "item_robe":
+        errors.append("халат не надевается")
+    host._use_character_slot()
+    if (host.player.equipped or {}).get("body"):
+        errors.append("халат не снимается")
+    host._toggle_equip(coat)
+    if (host.player.equipped or {}).get("body") != "item_coat":
+        errors.append("сюртук не надевается")
+    host._toggle_equip(robe)
+    if (host.player.equipped or {}).get("body") != "item_robe":
+        errors.append("халат не сменяет сюртук")
+    loot_coat = db.conn.execute(
+        "SELECT item_id FROM container_loot WHERE map_id = ? AND x = ? AND y = ?",
+        ("street_tenement", 44, 3),
+    ).fetchone()
+    if not loot_coat or loot_coat["item_id"] != "item_coat":
+        errors.append("сюртук не в шкафу квартиры")
+    for cid, pdata in classes.items():
+        if "item_robe" not in (pdata.get("starting_items") or []):
+            errors.append(f"{cid} без халата")
+    engine_src = (ROOT / "engine" / "game_engine.py").read_text(encoding="utf-8")
+    renderer_src = (ROOT / "engine" / "renderer.py").read_text(encoding="utf-8")
+    if "Халат не снимают" in engine_src or "Халат не снимают" in renderer_src:
+        errors.append("халат всё ещё нельзя снять")
     host.player.inventory = []
     host.player.equipped_weapon_id = None
     host._refresh_player_weapon()

@@ -8,13 +8,13 @@ import tcod
 from tcod import libtcodpy
 
 from engine.constants import (
-    EQUIP_SLOTS,
     LEGEND_WIDTH,
     SCREEN_HEIGHT,
     SCREEN_WIDTH,
     TILE_LEGEND,
     UNARMED_DAMAGE_DIE,
 )
+from engine.equipment import EQUIP_LAYOUT, EQUIP_SLOTS, empty_fill, slot_fill_name, worn_phrase
 from engine.clinic_tiles import TILE_HEIGHT, TILE_WIDTH, map_glyph, wall_glyph, wall_neighbor_mask
 from engine.palette import INKS, explored_color_dicts, hex_to_rgb, visible_color_dicts
 from engine.portraits import PORTRAIT_COLS, PORTRAIT_ROWS, load_pixels
@@ -1216,7 +1216,6 @@ class Renderer:
         from engine.paintings import oil_id_for_item
 
         items = list(getattr(player, "inventory", None) or [])
-        equipped = getattr(player, "equipped_weapon_id", None)
         selected = None
         if items and 0 <= selected_index < len(items):
             selected = items[selected_index]
@@ -1249,8 +1248,9 @@ class Renderer:
                 else:
                     marker, color = "  ", COLOR_TEXT
                 name = getattr(item, "name", "без имени")
-                if getattr(item, "id", None) == equipped:
-                    name = f"{name} — в руке"
+                where = worn_phrase(player, getattr(item, "id", "") or "")
+                if where:
+                    name = f"{name} — {where}"
                 self.console.print(
                     box_x + 4, y, f"{marker}{name}"[:text_width], fg=color
                 )
@@ -1287,7 +1287,7 @@ class Renderer:
                 getattr(selected, "type", "") or "",
             )
 
-        hint = "↑/↓ · e рука / читать · i закрыть"
+        hint = "↑/↓ · e надеть / снять / читать · i закрыть"
         self.console.print(
             box_x + 4,
             footer_y,
@@ -1296,10 +1296,10 @@ class Renderer:
         )
 
     def draw_character(self, player, selected_index: int = 0):
-        """Халат и слоты. Кулак, пока нож не в руке. Пустые ждут вещь."""
+        """Кукла слотов. Халат — вещь, не кожа."""
         occupation = getattr(player, "class_name", None) or "без занятия"
         box_width = 72
-        box_height = 24
+        box_height = 28
         box_x = (self.screen_width - box_width) // 2
         box_y = max(1, (self.screen_height - box_height) // 2)
         self._draw_box(
@@ -1339,29 +1339,24 @@ class Renderer:
 
         fills = []
         for slot_id, slot_name in EQUIP_SLOTS:
-            fills.append((slot_id, slot_name, self._equip_slot_fill(player, slot_id)))
-        layout = {
-            "head": (box_x + 42, box_y + 2),
-            "body": (box_x + 32, box_y + 6),
-            "hand": (box_x + 50, box_y + 6),
-            "belt": (box_x + 42, box_y + 10),
-        }
+            fills.append((slot_id, slot_name, slot_fill_name(player, slot_id)))
+        origin_x = box_x + 24
+        origin_y = box_y + 2
         selected = min(max(0, selected_index), len(fills) - 1)
         for i, (slot_id, slot_name, fill) in enumerate(fills):
-            sx, sy = layout.get(slot_id, (box_x + 42, box_y + 2 + i * 4))
+            ox, oy = EQUIP_LAYOUT.get(slot_id, (14, i * 3))
             self._draw_equip_slot(
-                sx, sy, 16, slot_name, fill, selected=i == selected
+                origin_x + ox, origin_y + oy, 16, slot_name, fill, selected=i == selected
             )
 
         slot_id, slot_name, fill = fills[selected]
-        if slot_id == "hand" and fill not in ("кулак", "пусто"):
-            note = f"{slot_name}: {fill}. e — в карман."
-        elif slot_id == "hand":
-            note = "рука: кулак 1d3. e — взять нож из кармана, если он там."
-        elif slot_id == "body":
-            note = "халат клиники. Не снимают."
+        vacant = empty_fill(slot_id)
+        if fill != vacant:
+            note = f"{slot_name}: {fill}. e — снять."
+        elif slot_id == "main_hand":
+            note = "правая рука: кулак 1d3. e — взять из кармана, если есть."
         else:
-            note = f"{slot_name}: пусто. Пока нечего надеть."
+            note = f"{slot_name}: пусто. e — надеть из кармана, если есть."
         wrap = self._wrap_text(note, box_width - 6)
         foot = box_y + box_height - 3
         for i, line in enumerate(wrap[:2]):
@@ -1369,21 +1364,9 @@ class Renderer:
         self.console.print(
             box_x + 3,
             box_y + box_height - 1,
-            "↑/↓ слот · e взять / снять · c закрыть",
+            "↑/↓ слот · e надеть / снять · c закрыть",
             fg=COLOR_MUTED,
         )
-
-    def _equip_slot_fill(self, player, slot_id: str) -> str:
-        if slot_id == "body":
-            return "халат клиники"
-        if slot_id == "hand":
-            equipped = getattr(player, "equipped_weapon_id", None)
-            if equipped:
-                for item in getattr(player, "inventory", None) or []:
-                    if getattr(item, "id", None) == equipped:
-                        return getattr(item, "name", "нож") or "нож"
-            return "кулак"
-        return "пусто"
 
     def _draw_equip_slot(self, x, y, width, title, fill, selected=False):
         inner = max(6, width - 2)

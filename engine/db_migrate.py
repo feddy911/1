@@ -307,6 +307,7 @@ def _apply_phase1(conn) -> None:
     _apply_phase17(conn)
     _apply_phase18(conn)
     _apply_phase19(conn)
+    _apply_phase20(conn)
 
 
 PLACEMENTS_PHASE1: List[Tuple[str, int, int, str, str]] = [
@@ -1274,6 +1275,7 @@ CONTAINER_LOOT: List[Tuple[str, int, int, str]] = [
     ("street_outside", 18, 15, "note_canal"),
     ("street_tenement", 24, 3, "key_tenement"),
     ("street_tenement", 44, 2, "note_tenement"),
+    ("street_tenement", 44, 3, "item_coat"),
 ]
 
 
@@ -1949,4 +1951,105 @@ def _apply_phase19(conn) -> None:
            SET skill_id = 'talk', fail_next_order = 31
            WHERE dialogue_id = 'dialogue_nastasya_intro' AND order_num = 11"""
     )
+
+
+def _ensure_items_clothing(conn) -> None:
+    """Одежда в CHECK и слот на вещи. Без rebuild INSERT халата падает."""
+    row = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='items'"
+    ).fetchone()
+    sql = (row[0] if row else "") or ""
+    cols = [entry[1] for entry in conn.execute("PRAGMA table_info(items)")]
+    if "clothing" not in sql:
+        conn.execute(
+            """
+            CREATE TABLE items_new (
+                id TEXT PRIMARY KEY,
+                type TEXT CHECK(type IN (
+                    'weapon', 'consumable', 'quest', 'note', 'key', 'clothing'
+                )),
+                name TEXT NOT NULL,
+                description TEXT,
+                damage_die TEXT,
+                healing INTEGER DEFAULT 0,
+                sanity_restore INTEGER DEFAULT 0,
+                sanity_damage INTEGER DEFAULT 0,
+                symbol TEXT DEFAULT '?',
+                color TEXT DEFAULT '#FFFFFF',
+                is_quest_item INTEGER DEFAULT 0,
+                use_effect TEXT,
+                content TEXT DEFAULT '',
+                equip_slot TEXT
+            )
+            """
+        )
+        shared = [col for col in cols if col != "equip_slot"]
+        listed = ", ".join(shared)
+        conn.execute(f"INSERT INTO items_new ({listed}) SELECT {listed} FROM items")
+        conn.execute("DROP TABLE items")
+        conn.execute("ALTER TABLE items_new RENAME TO items")
+        cols = [entry[1] for entry in conn.execute("PRAGMA table_info(items)")]
+    if "equip_slot" not in cols:
+        conn.execute("ALTER TABLE items ADD COLUMN equip_slot TEXT")
+
+
+def _apply_phase20(conn) -> None:
+    """Халат — вещь на тело. Сюртук в шкафу квартиры. Слоты как в ролевой."""
+    _ensure_items_clothing(conn)
+    conn.execute(
+        """INSERT INTO items
+           (id, type, name, description, damage_die, healing, sanity_restore,
+            sanity_damage, symbol, color, is_quest_item, use_effect, content,
+            equip_slot)
+           VALUES (?, 'clothing', ?, ?, '', 0, 0, 0, '~', ?, 0, NULL, NULL, 'body')
+           ON CONFLICT(id) DO UPDATE SET
+             type = excluded.type,
+             name = excluded.name,
+             description = excluded.description,
+             color = excluded.color,
+             equip_slot = excluded.equip_slot""",
+        (
+            "item_robe",
+            "Халат клиники",
+            "Казённый. Снимают, когда есть своё.",
+            INKS["linen"],
+        ),
+    )
+    conn.execute(
+        """INSERT INTO items
+           (id, type, name, description, damage_die, healing, sanity_restore,
+            sanity_damage, symbol, color, is_quest_item, use_effect, content,
+            equip_slot)
+           VALUES (?, 'clothing', ?, ?, '', 0, 0, 0, '~', ?, 1, NULL, NULL, 'body')
+           ON CONFLICT(id) DO UPDATE SET
+             type = excluded.type,
+             name = excluded.name,
+             description = excluded.description,
+             color = excluded.color,
+             is_quest_item = excluded.is_quest_item,
+             equip_slot = excluded.equip_slot""",
+        (
+            "item_coat",
+            "Сюртук",
+            "Ваш, с гвоздя в шкафу квартиры. Не халат.",
+            INKS["ash"],
+        ),
+    )
+    conn.execute(
+        "UPDATE items SET equip_slot = 'main_hand' WHERE id = 'item_knife'"
+    )
+    for class_id, raw in conn.execute("SELECT id, starting_items FROM player_classes"):
+        try:
+            items = json.loads(raw) if raw else []
+        except (TypeError, json.JSONDecodeError):
+            items = []
+        if not isinstance(items, list):
+            items = []
+        if "item_robe" in items:
+            continue
+        items.insert(0, "item_robe")
+        conn.execute(
+            "UPDATE player_classes SET starting_items = ? WHERE id = ?",
+            (json.dumps(items, ensure_ascii=False), class_id),
+        )
 

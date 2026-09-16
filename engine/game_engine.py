@@ -16,7 +16,6 @@ from engine.constants import (
     DOOR_TILES,
     DOUBLE_SAN_THRESHOLD,
     ending_text,
-    EQUIP_SLOTS,
     LOCKED_DOOR_HINTS,
     LOCKED_DOOR_TILES,
     NOTE_POSTSCRIPTS,
@@ -33,6 +32,15 @@ from engine.db_loader import DBLoader
 from engine.dialogue_engine import DialogueEngine
 from engine.dialogue_keys import choice_index_from_key
 from engine.entity_factory import Character, EntityFactory, Player
+from engine.equipment import (
+    EQUIP_SLOTS,
+    SLOT_INDEX,
+    first_item_for_slot,
+    item_in_slot,
+    slot_for_item,
+    slot_name,
+    worn_phrase,
+)
 from engine.fov_system import FOVSystem
 from engine.quest_system import (
     NOTE_TRUTH,
@@ -237,7 +245,7 @@ class GameEngine:
             item = self.entity_factory.create_item(item_id)
             if item:
                 self.player.inventory.append(item)
-        self._equip_first_weapon()
+        self._equip_defaults()
         self._open_arrival(starting_map['id'])
 
         self.state = GameState.PLAYING
@@ -299,8 +307,18 @@ class GameEngine:
             for talent_id in pdata.get("talents") or []
             if isinstance(talent_id, str)
         ]
-        equipped = pdata.get("equipped_weapon_id")
-        self.player.equipped_weapon_id = equipped if isinstance(equipped, str) else None
+        equipped = pdata.get("equipped")
+        if isinstance(equipped, dict):
+            self.player.equipped = {
+                str(slot): str(item_id)
+                for slot, item_id in equipped.items()
+                if slot and item_id
+            }
+        else:
+            weapon = pdata.get("equipped_weapon_id")
+            self.player.equipped_weapon_id = weapon if isinstance(weapon, str) else None
+            self._wear_starting_robe()
+        self._ensure_robe_in_pocket()
         self._refresh_player_weapon()
 
         self.flags = set(payload.get("flags") or [])
@@ -541,10 +559,10 @@ class GameEngine:
             occupied.add((x, y))
 
     def _refresh_player_weapon(self):
-        """Урон — с того, что в руке. Кулак, если руки пусты."""
+        """Урон — с того, что в правой руке. Кулак, если рука пуста."""
         if not self.player:
             return
-        equipped_id = getattr(self.player, "equipped_weapon_id", None)
+        equipped_id = self.player.equipped_weapon_id
         die = UNARMED_DAMAGE_DIE
         if equipped_id:
             held = next(
@@ -565,6 +583,30 @@ class GameEngine:
                 self.player.equipped_weapon_id = None
         self.player.damage_die = die
 
+    def _ensure_robe_in_pocket(self) -> None:
+        if not self.player:
+            return
+        if any(getattr(item, "id", None) == "item_robe" for item in self.player.inventory):
+            return
+        robe = self.entity_factory.create_item("item_robe") if self.entity_factory else None
+        if robe:
+            self.player.inventory.append(robe)
+
+    def _wear_starting_robe(self) -> None:
+        if not self.player:
+            return
+        self._ensure_robe_in_pocket()
+        if "body" in (self.player.equipped or {}):
+            return
+        body = first_item_for_slot(self.player, "body")
+        if body:
+            self.player.equipped["body"] = body.id
+
+    def _equip_defaults(self):
+        """Халат на тело, нож в правую руку, если ещё не надето."""
+        self._wear_starting_robe()
+        self._equip_first_weapon()
+
     def _equip_first_weapon(self):
         """Стартовый нож сразу в руке, не лежит мёртвым грузом."""
         if not self.player:
@@ -579,77 +621,52 @@ class GameEngine:
         self._refresh_player_weapon()
 
     def _toggle_equip(self, item) -> None:
-        if getattr(item, "type", "") != "weapon":
-            self.add_message(f"Нельзя взять в руку {item.name}.")
+        slot = slot_for_item(item)
+        if not slot:
+            self.add_message(f"{item.name} не надевают.")
             return
-        current = getattr(self.player, "equipped_weapon_id", None)
+        if not isinstance(self.player.equipped, dict):
+            self.player.equipped = {}
+        current = self.player.equipped.get(slot)
         if current == item.id:
-            self.player.equipped_weapon_id = None
+            self.player.equipped.pop(slot, None)
             self._refresh_player_weapon()
-            self.add_message(f"{item.name} — обратно в карман халата.")
+            self.add_message(f"{item.name} — сняли.")
             return
-        self.player.equipped_weapon_id = item.id
+        self.player.equipped[slot] = item.id
         self._refresh_player_weapon()
-        self.add_message(f"В руке: {item.name}.")
+        where = worn_phrase(self.player, item.id) or slot_name(slot)
+        self.add_message(f"{where}: {item.name}.")
 
     def _take_into_hand_if_empty(self, item) -> None:
-        if getattr(item, "type", "") != "weapon":
+        if slot_for_item(item) != "main_hand":
             return
         if getattr(self.player, "equipped_weapon_id", None):
             return
         if not getattr(item, "damage_die", ""):
             return
-        self.player.equipped_weapon_id = item.id
-        self._refresh_player_weapon()
-        self.add_message(f"В руке: {item.name}.")
+        self._toggle_equip(item)
 
     def _item_in_hand(self):
-        if not self.player:
-            return None
-        equipped_id = getattr(self.player, "equipped_weapon_id", None)
-        if not equipped_id:
-            return None
-        return next(
-            (
-                item
-                for item in self.player.inventory
-                if getattr(item, "id", None) == equipped_id
-            ),
-            None,
-        )
-
-    def _slot_fill(self, slot_id: str):
-        """Что в слоте: подпись и вещь, если есть."""
-        if slot_id == "body":
-            return "халат клиники", None
-        if slot_id == "hand":
-            held = self._item_in_hand()
-            if held:
-                return getattr(held, "name", "нож") or "нож", held
-            return "кулак", None
-        return "пусто", None
+        return item_in_slot(self.player, "main_hand") if self.player else None
 
     def _use_character_slot(self) -> None:
         if not self.player:
             return
-        slots = EQUIP_SLOTS
-        index = min(max(0, self.character_selected_index), len(slots) - 1)
-        slot_id, _name = slots[index]
-        if slot_id == "body":
-            self.add_message("Халат не снимают. Его уже сняли с кого-то.")
+        index = min(max(0, self.character_selected_index), len(EQUIP_SLOTS) - 1)
+        slot_id, _name = EQUIP_SLOTS[index]
+        worn = item_in_slot(self.player, slot_id)
+        if worn:
+            self._toggle_equip(worn)
             return
-        if slot_id in ("head", "belt"):
-            self.add_message("Пусто. Пока нечего надеть.")
+        spare = first_item_for_slot(self.player, slot_id)
+        if spare:
+            self._toggle_equip(spare)
             return
-        held = self._item_in_hand()
-        if held:
-            self._toggle_equip(held)
+        if slot_id == "main_hand":
+            self.add_message("В руке кулак. Оружия в кармане нет.")
             return
-        for item in self.player.inventory:
-            if getattr(item, "type", "") == "weapon" and getattr(item, "damage_die", ""):
-                self._toggle_equip(item)
-                return
-        self.add_message("В руке кулак. Ножа в кармане нет.")
+        self.add_message(f"{slot_name(slot_id).capitalize()} пусто. Пока нечего надеть.")
 
     def _open_arrival(self, map_id: str) -> None:
         map_data = self.db.get_map(map_id) if self.db else None
@@ -850,7 +867,7 @@ class GameEngine:
             self.talent_selected_index = 0
         elif event.sym == tcod.event.KeySym.C:
             self.is_character_open = True
-            self.character_selected_index = 2
+            self.character_selected_index = SLOT_INDEX["body"]
         elif event.sym in (
             tcod.event.KeySym.SLASH,
             tcod.event.KeySym.QUESTION,
@@ -901,7 +918,7 @@ class GameEngine:
         return True
 
     def _handle_character_input(self, event) -> bool:
-        """Халат и слоты. Не кукла MMORPG."""
+        """Кукла слотов. Халат снимают, если есть во что переодеться."""
         last = max(0, len(EQUIP_SLOTS) - 1)
         if event.sym in (tcod.event.KeySym.C, tcod.event.KeySym.ESCAPE):
             self.is_character_open = False
@@ -980,7 +997,7 @@ class GameEngine:
             self.add_message("Ключи используются автоматически при взаимодействии с дверью.")
             return
 
-        if item_type == 'weapon':
+        if item_type in ("weapon", "clothing") or slot_for_item(item):
             self._toggle_equip(item)
             return
 

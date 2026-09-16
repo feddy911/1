@@ -1,5 +1,5 @@
 """Фабрика сущностей — создаёт игроков, NPC, предметы."""
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 from tcod import libtcodpy
 
 
@@ -43,7 +43,7 @@ class Player:
         self.starting_item_ids = list(starting) if isinstance(starting, list) else []
         self.skills = dict(class_data.get('skills') or {})
         self.talents: List[str] = []
-        self.equipped_weapon_id: Optional[str] = None
+        self.equipped: Dict[str, str] = {}
         from engine.constants import UNARMED_DAMAGE_DIE
 
         self.damage_die = UNARMED_DAMAGE_DIE
@@ -62,6 +62,19 @@ class Player:
         
         # Активные эффекты способности
         self.active_effects = []
+
+    @property
+    def equipped_weapon_id(self) -> Optional[str]:
+        return (self.equipped or {}).get("main_hand")
+
+    @equipped_weapon_id.setter
+    def equipped_weapon_id(self, value: Optional[str]) -> None:
+        if not isinstance(self.equipped, dict):
+            self.equipped = {}
+        if value:
+            self.equipped["main_hand"] = value
+        else:
+            self.equipped.pop("main_hand", None)
     
     def is_alive(self) -> bool:
         return self.hp > 0
@@ -283,6 +296,7 @@ class Item:
         self.is_quest_item = bool(data.get('is_quest_item', 0))
         self.use_effect = data.get('use_effect', '')
         self.content = data.get('content', '')  # Для записок
+        self.equip_slot = data.get('equip_slot') or ''
         
         # Для ключей
         self.key_id = data.get('key_id')  # ID ключа в таблице keys

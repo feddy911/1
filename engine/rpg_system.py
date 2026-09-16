@@ -236,7 +236,7 @@ def is_canon_loot(item) -> bool:
     if getattr(item, "is_quest_item", False):
         return True
     kind = getattr(item, "type", "") or ""
-    return kind in {"key", "note"}
+    return kind in {"key", "note", "clothing"}
 
 
 def san_loss_for(event_id: str, player) -> Tuple[int, Optional[str]]:
