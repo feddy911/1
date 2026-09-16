@@ -182,6 +182,10 @@ def main():
         errors.append("говорить имеет фразу таблицы")
     from engine.talent_system import (
         TALENTS,
+        has_hear_lamp,
+        has_note_hold,
+        has_opening_crit,
+        has_trace_glimpse,
         take_talent,
         visible_talents,
     )
@@ -221,10 +225,40 @@ def main():
         errors.append("после корня не открываются ветки")
     if "see_trace" in SKILL_PHRASES:
         errors.append("след получил фразы броска")
+    rebel.talents = ["fight_1", "fight_2", "fight_3"]
+    if not has_opening_crit(rebel):
+        errors.append("талант «Насквозь» не готовит удар")
+    seeker.talents = ["hear_1", "hear_2"]
+    if not has_hear_lamp(seeker):
+        errors.append("талант слуха у лампы не ставится")
+    seeker.talents = ["search_1", "trace_1"]
+    if not has_trace_glimpse(seeker):
+        errors.append("талант следа не ставится")
+    mystic = players["mystic"]
+    mystic.talents = ["hear_1", "read_1", "read_2"]
+    if not has_note_hold(mystic):
+        errors.append("талант чужого почерка не ставится")
+    import engine.rpg_system as rpg_hold
+
+    class _WillFail:
+        success = False
+        total = 18
+        target = 10
+        crit = False
+        fumble = True
+
+    old_will = rpg_hold.roll_will
+    rpg_hold.roll_will = lambda player: _WillFail()
+    amount, phrase = rpg_hold.san_loss_for("note_canal", mystic)
+    rpg_hold.roll_will = old_will
+    if amount != 1 or "почерк" not in (phrase or "").lower():
+        errors.append(f"чужой почерк не держит бумагу: {amount} {phrase}")
     rebel.talents = []
     seeker.talents = []
+    mystic.talents = []
     rebel.san = rebel.max_san
     seeker.san = seeker.max_san
+    mystic.san = mystic.max_san
     from engine.constants import UNARMED_DAMAGE_DIE
     from engine.entity_factory import EntityFactory
     from engine.paintings import LOCATION_FILES, oil_id_for_item, oil_id_for_map, painting_path
@@ -439,6 +473,7 @@ def main():
     engine.current_dialogue_choices = []
     engine.current_dialogue_text = ""
     engine.current_dialogue_speaker = ""
+    engine.current_dialogue_portrait = ""
     engine.showing_help = False
     engine.is_inventory_open = False
     engine.is_talents_open = False
@@ -1618,6 +1653,17 @@ def main():
             de_wh_ok.finish()
         else:
             errors.append("не стартует постовой для успеха свистка")
+        engine.player.id = "seeker"
+        engine.player.talents = ["hear_1", "hear_2"]
+        engine.flags.discard("mystic_trace")
+        engine.fired_triggers = set()
+        engine._load_map("hospital_floor_1")
+        engine.player.x, engine.player.y = 18, 2
+        rpg_hear.roll_3d6 = lambda: 3
+        engine._try_move(0, -1)
+        if "mystic_trace" not in engine.flags:
+            errors.append("талант слуха не работает у лампы без занятия мистика")
+        engine.player.talents = []
     finally:
         rpg_hear.roll_3d6 = old_hear
         engine.player.id = old_pid
@@ -1835,10 +1881,86 @@ def main():
     for pid, name in PORTRAIT_FILES.items():
         if portrait_path(pid) is None:
             errors.append(f"нет портрета data/portraits/{name}")
+    for house_pid in ("shopkeeper_lukin", "landlady_praskovya"):
+        if house_pid not in PORTRAIT_FILES:
+            errors.append(f"нет портрета {house_pid} в списке")
+        elif portrait_path(house_pid) is None:
+            errors.append(f"нет файла портрета {PORTRAIT_FILES[house_pid]}")
     if "_fit_portrait_dest" not in (ROOT / "engine" / "renderer.py").read_text(
         encoding="utf-8"
     ):
         errors.append("портрет снова растягивается в клетку")
+
+    saved_talk = (
+        engine.current_map_id,
+        engine.player.x,
+        engine.player.y,
+        engine.state,
+        engine.current_dialogue_portrait,
+        set(engine.flags),
+        list(engine.player.talents),
+        list(engine.messages),
+        set(engine.visited_regions),
+    )
+    engine.flags.add("archive_name")
+    engine.flags.add("guilt_admitted")
+    engine._load_map("street_tenement")
+    lukin = next(
+        (e for e in engine.entities if getattr(e, "id", "") == "shopkeeper_lukin"),
+        None,
+    )
+    if not lukin:
+        errors.append("Лукин не стоит в лавке")
+    else:
+        engine.state = _LiveState.PLAYING
+        engine.player.x, engine.player.y = lukin.x, lukin.y + 1
+        engine._try_interact()
+        if engine.current_dialogue_portrait != "shopkeeper_lukin":
+            errors.append(
+                f"разговор с Лукиным без портрета: {engine.current_dialogue_portrait!r}"
+            )
+    prask = next(
+        (e for e in engine.entities if getattr(e, "id", "") == "landlady_praskovya"),
+        None,
+    )
+    if not prask:
+        errors.append("Прасковья не стоит в квартире")
+    else:
+        engine.state = _LiveState.PLAYING
+        engine.current_dialogue_portrait = ""
+        engine.player.x, engine.player.y = prask.x, prask.y + 1
+        engine._try_interact()
+        if engine.current_dialogue_portrait != "landlady_praskovya":
+            errors.append(
+                f"разговор с Прасковьей без портрета: {engine.current_dialogue_portrait!r}"
+            )
+    engine.player.talents = ["search_1", "trace_1"]
+    engine.visited_regions = set()
+    engine.messages = []
+    engine.flags.discard("talent_trace:ten_shop")
+    engine._check_region(10, 4)
+    if "овал от ключей" not in " ".join(engine.messages).lower():
+        errors.append(f"талант следа молчит в лавке: {engine.messages}")
+    (
+        map_id,
+        px,
+        py,
+        st,
+        portrait,
+        flags,
+        talents,
+        messages,
+        visited,
+    ) = saved_talk
+    engine.flags = flags
+    engine.player.talents = talents
+    engine.visited_regions = visited
+    engine.messages = messages
+    engine.current_dialogue_portrait = portrait
+    engine.state = st
+    if map_id:
+        engine._load_map(map_id)
+        engine.player.x, engine.player.y = px, py
 
     engine._load_map("hospital_floor_1")
     engine.player.x, engine.player.y = 18, 2

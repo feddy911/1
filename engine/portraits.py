@@ -20,6 +20,8 @@ PORTRAIT_FILES: Dict[str, str] = {
     "mystic": "mystic.png",
     "rebel": "rebel.png",
     "innkeeper_semyon": "semyon.png",
+    "shopkeeper_lukin": "lukin.png",
+    "landlady_praskovya": "praskovya.png",
     "watchman_petrov": "petrov.png",
     "sennaya_beggar": "beggar.png",
     "player_double": "double.png",
