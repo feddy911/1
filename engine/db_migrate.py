@@ -68,11 +68,22 @@ def apply_migrations(conn) -> None:
            SET description = 'Лунный свет из окна',
                symbol = 'W',
                color = ?,
-               radius = 5,
-               intensity = 0.7,
+               radius = 3,
+               intensity = 0.65,
                flicker = 0
            WHERE id = 'window'""",
         (INKS["frost"],),
+    )
+    conn.executemany(
+        """UPDATE light_sources
+           SET radius = ?, intensity = ?
+           WHERE id = ?""",
+        (
+            (2, 0.7, "candle"),
+            (3, 0.95, "lamp"),
+            (3, 0.85, "torch"),
+            (3, 0.9, "gas_lamp"),
+        ),
     )
 
     conn.execute(
@@ -314,6 +325,7 @@ def _apply_phase1(conn) -> None:
     _apply_phase24(conn)
     _apply_phase25(conn)
     _apply_phase26(conn)
+    _apply_canal_east(conn)
 
 
 PLACEMENTS_PHASE1: List[Tuple[str, int, int, str, str]] = [
@@ -1471,6 +1483,7 @@ def _apply_map_links(conn) -> None:
             (36, 14, "street_traktir"),
             (57, 12, "hospital_bred"),
             (48, 14, "street_tenement"),
+            (60, 20, "street_canal_east"),
         ],
     )
     conn.execute(
@@ -3062,6 +3075,102 @@ def _apply_phase26(conn) -> None:
                 "dialogue_lukin_repeat",
                 74,
             ),
+        ),
+    )
+
+
+def _apply_canal_east(conn) -> None:
+    """Туман с улицы ведёт вдоль канала, не сразу в сени."""
+    conn.execute(
+        """INSERT INTO maps (id, name, description, file_path, width, height,
+                             min_sanity, max_sanity, is_starting_map)
+           VALUES (?, ?, ?, ?, ?, ?, 0, 100, 0)
+           ON CONFLICT(id) DO UPDATE SET
+             name = excluded.name,
+             description = excluded.description,
+             file_path = excluded.file_path,
+             width = excluded.width,
+             height = excluded.height""",
+        (
+            "street_canal_east",
+            "Набережная",
+            "Канал дальше клиники. Дом — сбоку, не в упор. Дальше — ещё вата.",
+            "data/maps/canal_east.txt",
+            60,
+            20,
+        ),
+    )
+    conn.executemany(
+        """DELETE FROM map_connections
+           WHERE source_map_id = ? AND source_x = ? AND source_y = ?""",
+        [
+            ("street_outside", 58, 9),
+            ("street_outside", 58, 10),
+            ("street_tenement", 0, 6),
+            ("street_tenement", 0, 7),
+            ("street_canal_east", 0, 9),
+            ("street_canal_east", 0, 10),
+            ("street_canal_east", 14, 6),
+            ("street_canal_east", 15, 6),
+            ("street_canal_east", 13, 4),
+            ("street_canal_east", 14, 4),
+            ("street_canal_east", 12, 6),
+            ("street_canal_east", 13, 6),
+        ],
+    )
+    conn.executemany(
+        """INSERT INTO map_connections
+           (source_map_id, connection_type, source_x, source_y,
+            target_map_id, target_x, target_y, description)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+        [
+            ("street_outside", "entrance", 58, 9, "street_canal_east", 1, 9,
+             "Дальше вдоль канала"),
+            ("street_outside", "entrance", 58, 10, "street_canal_east", 1, 10,
+             "Дальше вдоль канала"),
+            ("street_canal_east", "exit", 0, 9, "street_outside", 57, 9,
+             "К клинике"),
+            ("street_canal_east", "exit", 0, 10, "street_outside", 57, 10,
+             "К клинике"),
+            ("street_canal_east", "entrance", 12, 6, "street_tenement", 1, 6,
+             "Ворота во двор"),
+            ("street_canal_east", "entrance", 13, 6, "street_tenement", 1, 7,
+             "Ворота во двор"),
+            ("street_tenement", "exit", 0, 6, "street_canal_east", 12, 7,
+             "На набережную"),
+            ("street_tenement", "exit", 0, 7, "street_canal_east", 13, 7,
+             "На набережную"),
+        ],
+    )
+    conn.executemany(
+        """INSERT INTO map_regions
+           (id, map_id, x1, y1, x2, y2, name, first_visit_text, sanity_effect)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+           ON CONFLICT(id) DO UPDATE SET
+             first_visit_text = excluded.first_visit_text,
+             x1 = excluded.x1, y1 = excluded.y1, x2 = excluded.x2, y2 = excluded.y2,
+             name = excluded.name, sanity_effect = excluded.sanity_effect""",
+        [
+            ("ce_west", "street_canal_east", 1, 7, 12, 15, "Набережная",
+             "Канал тот же. Клиника уже за спиной.", 0),
+            ("ce_house", "street_canal_east", 12, 4, 16, 8, "Двор",
+             "Ворота в двор. Лавка — во дворе, не с камня.", 0),
+            ("ce_east", "street_canal_east", 45, 7, 58, 15, "Дальше",
+             "Дальше вата и вода. Домов ещё нет — или есть, да не для вас.", 0),
+        ],
+    )
+    conn.execute(
+        """UPDATE map_regions SET first_visit_text = ?
+           WHERE id = 'st_fog'""",
+        (
+            "Дальше канал в вате. Дом — не сразу, сбоку, коли пустит.",
+        ),
+    )
+    conn.execute(
+        """UPDATE triggers SET text = ?
+           WHERE id = 'trigger_fog'""",
+        (
+            "Туман густеет. Дальше канал — если есть имя и долг, не одно из двух.",
         ),
     )
 

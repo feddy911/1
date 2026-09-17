@@ -31,6 +31,16 @@ def _put(tile: np.ndarray, x: int, y: int, name: str) -> None:
         tile[y, x] = INK[name]
 
 
+def _mix_px(tile: np.ndarray, x: int, y: int, name: str, t: float) -> None:
+    if not (0 <= x < TILE2D and 0 <= y < TILE2D):
+        return
+    t = max(0.0, min(1.0, t))
+    src = tile[y, x].astype(np.float32)
+    tile[y, x] = np.clip(src * (1.0 - t) + np.asarray(INK[name], dtype=np.float32) * t, 0, 255).astype(
+        np.uint8
+    )
+
+
 def _rect(tile: np.ndarray, x0: int, y0: int, x1: int, y1: int, name: str) -> None:
     x0, x1 = max(0, x0), min(TILE2D, x1)
     y0, y1 = max(0, y0), min(TILE2D, y1)
@@ -182,9 +192,46 @@ def _iso_box(
     _rect(tile, x0, y0, min(x1, x0 + 2), min(top_y1, y0 + 1), "ochre")
 
 
-def paint_floor(wx: int = 0, wy: int = 0) -> np.ndarray:
+def paint_floor(wx: int = 0, wy: int = 0, ground: str = "clinic") -> np.ndarray:
+    """Пол комнаты: плитка, брусчатка улицы или доски."""
+    if ground == "street":
+        tile = _blank("graphite")
+        for y in range(TILE2D):
+            for x in range(TILE2D):
+                gx = wx * TILE2D + x
+                gy = wy * TILE2D + y
+                row = gy // 8
+                stagger = (row % 2) * 6
+                col = (gx + stagger) // 12
+                lx = (gx + stagger) % 12
+                ly = gy % 8
+                if lx == 11 or ly == 7:
+                    _put(tile, x, y, "soot")
+                    continue
+                n = (col * 17 + row * 13) & 7
+                if n == 0:
+                    _put(tile, x, y, "slate")
+                else:
+                    _put(tile, x, y, "graphite")
+        return tile
+    if ground == "wood":
+        tile = _blank("wood")
+        for y in range(TILE2D):
+            gy = wy * TILE2D + y
+            plank = gy // 6
+            for x in range(TILE2D):
+                gx = wx * TILE2D + x
+                if gy % 6 == 5:
+                    _put(tile, x, y, "soot")
+                elif gy % 6 == 0:
+                    _put(tile, x, y, "jamb")
+                elif (gx + plank * 5) % 17 == 0:
+                    _put(tile, x, y, "jamb")
+                else:
+                    _put(tile, x, y, "wood")
+        return tile
     tile = _blank("graphite")
-    step = 8
+    step = 16
     for y in range(TILE2D):
         for x in range(TILE2D):
             gx, gy = x % step, y % step
@@ -209,7 +256,7 @@ def paint_void() -> np.ndarray:
 
 
 def paint_wall(mask: int) -> np.ndarray:
-    """Крышка кирпича; южная губа, если снизу пол — лёгкая изометрия."""
+    """Крышка кирпича и кайма к полу, как комната сверху. Не analog."""
     tile = _blank("graphite")
     bits = mask & 15
     for y in range(TILE2D):
@@ -219,20 +266,25 @@ def paint_wall(mask: int) -> np.ndarray:
             local = (x + shift) % 12
             mortar = (y % 5 == 4) or local == 11
             _put(tile, x, y, "soot" if mortar else "graphite")
+    rim = 3
+    if not bits & 1:
+        _rect(tile, 0, 0, 32, rim, "ice")
+        _rect(tile, 0, 0, 32, 1, "frost")
+    if not bits & 2:
+        _rect(tile, 32 - rim, 0, 32, 32, "ice")
+        _rect(tile, 31, 0, 32, 32, "frost")
+    if not bits & 8:
+        _rect(tile, 0, 0, rim, 32, "ice")
+        _rect(tile, 0, 0, 1, 32, "frost")
     if not bits & 4:
-        _rect(tile, 0, 18, 32, 32, "slate")
+        _rect(tile, 0, 16, 32, 32, "ice")
+        _rect(tile, 0, 16, 32, 18, "frost")
+        _rect(tile, 0, 18, 32, 28, "slate")
         for x in range(TILE2D):
-            _put(tile, x, 18, "ash")
             if x % 3 == 0:
                 _put(tile, x, 19, "graphite")
-        _rect(tile, 0, 29, 32, 32, "soot")
-        _rect(tile, 30, 18, 32, 32, "soot")
-    if not bits & 1:
-        _rect(tile, 0, 0, 32, 2, "soot")
-    if not bits & 2:
-        _rect(tile, 30, 0, 32, 32, "soot")
-    if not bits & 8:
-        _rect(tile, 0, 0, 2, 32, "soot")
+        _rect(tile, 0, 28, 32, 32, "soot")
+        _rect(tile, 30, 16, 32, 32, "soot")
     return tile
 
 
@@ -248,6 +300,299 @@ def paint_window(mask: int) -> np.ndarray:
     return tile
 
 
+FACADE_TALL = 4
+STREET_YARD = frozenset({".", "*", "T", "+", "'", "C"})
+
+
+def _map_cell(tiles, x: int, y: int, default: str = "#") -> str:
+    if not tiles:
+        return default
+    height = len(tiles)
+    width = len(tiles[0]) if height else 0
+    if not (0 <= y < height and 0 <= x < width):
+        return default
+    return tiles[y][x]
+
+
+def transition_dir(tiles, x: int, y: int, char: str = "E") -> tuple:
+    """Куда смотрит проход: в дом, к краю, вверх по лестнице. Не analog."""
+    if char == "S":
+        return (0, -1)
+    if char == "s":
+        return (0, 1)
+    if not tiles:
+        return (0, -1)
+    height = len(tiles)
+    width = len(tiles[0]) if height else 0
+    if x <= 1:
+        return (-1, 0)
+    if x >= width - 2:
+        return (1, 0)
+    if y <= 0:
+        return (0, -1)
+    if y >= height - 1:
+        return (0, 1)
+    south = _map_cell(tiles, x, y + 1, "#")
+    north = _map_cell(tiles, x, y - 1, "#")
+    if south in STREET_YARD and north not in STREET_YARD:
+        return (0, -1)
+    if north in STREET_YARD and south not in STREET_YARD:
+        return (0, 1)
+    west = _map_cell(tiles, x - 1, y, "#")
+    east = _map_cell(tiles, x + 1, y, "#")
+    if west in STREET_YARD and east not in STREET_YARD:
+        return (1, 0)
+    if east in STREET_YARD and west not in STREET_YARD:
+        return (-1, 0)
+    return (0, -1)
+
+
+def is_house_gate(tiles, x: int, y: int) -> bool:
+    """Ворота в стене, не край тумана."""
+    if _map_cell(tiles, x, y, ".") != "E":
+        return False
+    walls = {"#", "W", "E"}
+    left = _map_cell(tiles, x - 1, y, ".")
+    right = _map_cell(tiles, x + 1, y, ".")
+    return left in walls and right in walls
+
+
+def paint_gate(wx: int = 0, wy: int = 0) -> np.ndarray:
+    """Арка ворот: косяки, проём на двор, не глухая дверь."""
+    tile = paint_floor(wx, wy, "street")
+    _rect(tile, 0, 0, 7, 32, "ochre")
+    _rect(tile, 25, 0, 32, 32, "ochre")
+    for y in range(8):
+        _rect(tile, 7, y, 25, y + 1, "ochre")
+    for y in range(0, 8):
+        if (y % 4) == 3:
+            _rect(tile, 0, y, 7, y + 1, "wood")
+            _rect(tile, 25, y, 32, y + 1, "wood")
+    _rect(tile, 9, 8, 23, 32, "void")
+    _rect(tile, 14, 3, 18, 8, "linen")
+    _rect(tile, 15, 4, 17, 7, "ash")
+    return tile
+
+
+def is_passage(tiles, x: int, y: int) -> bool:
+    """Подворотня в линии фасада: щель между домами, не край карты."""
+    ch = _map_cell(tiles, x, y, "#")
+    if ch not in {".", "*", "E", "'"}:
+        return False
+    if is_house_gate(tiles, x, y):
+        return True
+    return is_south_facade(tiles, x - 1, y) or is_south_facade(tiles, x + 1, y)
+
+
+def facade_cutaway(px: int, py: int, x: int, y: int, reach: int = 2) -> bool:
+    """Игрок у стены или у ворот — нижний этаж не заслоняет проход."""
+    return max(abs(px - x), abs(py - y)) <= reach
+
+
+def can_peek(tiles, px: int, py: int, x: int, y: int, reach: int = 2) -> bool:
+    """Заглянуть в окно или подворотню: двор/комната в том же простенке."""
+    if not is_behind_house(tiles, x, y):
+        return True
+    if max(abs(px - x), abs(py - y)) > reach + 3:
+        return False
+    height = len(tiles)
+    for fy in range(y + 1, min(height, y + 5)):
+        if is_passage(tiles, x, fy) and facade_cutaway(px, py, x, fy, reach):
+            return True
+        char = _map_cell(tiles, x, fy)
+        if char == "W" and is_south_facade(tiles, x, fy):
+            return facade_cutaway(px, py, x, fy, reach)
+        if is_south_facade(tiles, x, fy):
+            return False
+    return False
+
+
+def _window_lit(wx: int, wy: int, story: int, mapped: bool) -> bool:
+    """Часть окон с огнём. Клетка W на мостовой всегда светит снизу."""
+    if mapped and story == FACADE_TALL - 1:
+        return True
+    return (wx * 19 + wy * 23 + story * 11) % 7 in (0, 3)
+
+
+def is_south_facade(tiles, x: int, y: int) -> bool:
+    """Лицевой дом к широкой мостовой. Двор в четыре клетки — не Невский."""
+    if _map_cell(tiles, x, y) not in {"#", "W", '"'}:
+        return False
+    if _map_cell(tiles, x, y + 1, ".") not in STREET_YARD:
+        return False
+    return _yard_width(tiles, x, y + 1) >= 8
+
+
+def _yard_width(tiles, x: int, y: int) -> int:
+    if _map_cell(tiles, x, y, "#") not in STREET_YARD:
+        return 0
+    width = 1
+    for dx in range(1, 16):
+        if _map_cell(tiles, x + dx, y, "#") in STREET_YARD:
+            width += 1
+        else:
+            break
+    for dx in range(1, 16):
+        if _map_cell(tiles, x - dx, y, "#") in STREET_YARD:
+            width += 1
+        else:
+            break
+    return width
+
+
+def is_behind_house(tiles, x: int, y: int) -> bool:
+    """Клетка к северу от лицевого фасада — двор или комната, не улица."""
+    if not tiles:
+        return False
+    for fy in range(y + 1, len(tiles)):
+        if (
+            is_south_facade(tiles, x, fy)
+            or is_house_gate(tiles, x, fy)
+            or is_passage(tiles, x, fy)
+        ):
+            return True
+        if _map_cell(tiles, x, fy) == "=":
+            return False
+    return False
+
+
+def is_quay_wall(tiles, x: int, y: int) -> bool:
+    if _map_cell(tiles, x, y) not in {"#", "W"}:
+        return False
+    for dx, dy in ((0, 1), (0, -1), (1, 0), (-1, 0)):
+        if _map_cell(tiles, x + dx, y + dy, ".") == "=":
+            return True
+    return False
+
+
+def _fput(tile: np.ndarray, x: int, y: int, name: str) -> None:
+    h, w = tile.shape[:2]
+    if 0 <= x < w and 0 <= y < h:
+        tile[y, x] = INK[name]
+
+
+def _frect(tile: np.ndarray, x0: int, y0: int, x1: int, y1: int, name: str) -> None:
+    h, w = tile.shape[:2]
+    x0, x1 = max(0, x0), min(w, x1)
+    y0, y1 = max(0, y0), min(h, y1)
+    if x1 <= x0 or y1 <= y0:
+        return
+    tile[y0:y1, x0:x1] = INK[name]
+
+
+def _bay_window(tile: np.ndarray, y0: int, lit: bool, open_pane: bool = False) -> None:
+    """Прямоугольное окно с сандриком. Открытое стекло — дыра на комнату."""
+    _frect(tile, 8, y0 + 3, 24, y0 + 5, "ash")
+    _frect(tile, 7, y0 + 4, 25, y0 + 6, "linen")
+    _frect(tile, 8, y0 + 6, 24, y0 + 23, "linen")
+    if open_pane:
+        _frect(tile, 10, y0 + 8, 22, y0 + 21, "void")
+    elif lit:
+        _frect(tile, 10, y0 + 8, 22, y0 + 21, "lamp")
+        _frect(tile, 11, y0 + 9, 21, y0 + 20, "ochre")
+        _fput(tile, 12, y0 + 11, "frost")
+        _fput(tile, 18, y0 + 12, "linen")
+    else:
+        _frect(tile, 10, y0 + 8, 22, y0 + 21, "canal")
+        _frect(tile, 11, y0 + 9, 21, y0 + 20, "soot")
+    _frect(tile, 15, y0 + 8, 17, y0 + 21, "linen")
+    _frect(tile, 10, y0 + 14, 22, y0 + 15, "linen")
+    if open_pane and lit:
+        _fput(tile, 9, y0 + 7, "lamp")
+        _fput(tile, 22, y0 + 7, "lamp")
+
+
+def facade_peek_y(wy: int, story: int) -> int:
+    """Клетка за стеклом: нижнее окно — первая комната, выше — дальше вглубь."""
+    return wy - (FACADE_TALL - story)
+
+
+def facade_interior(tiles, x: int, facade_y: int, story: int):
+    """Первая комната за стеклом, не кирпич простенка."""
+    y = facade_peek_y(facade_y, story)
+    if not tiles or y >= len(tiles):
+        return None, "#"
+    while y >= 0:
+        ch = _map_cell(tiles, x, y, "#")
+        if ch not in {"#", "W", '"'}:
+            return y, ch
+        y -= 1
+    return None, "#"
+
+
+def is_under_facade(tiles, x: int, y: int) -> bool:
+    """Комната, которую закроет лицевой фасад. Выше карниза — небо."""
+    if not tiles:
+        return False
+    height = len(tiles)
+    for fy in range(y + 1, min(height, y + FACADE_TALL)):
+        if (
+            is_south_facade(tiles, x, fy)
+            or is_house_gate(tiles, x, fy)
+            or is_passage(tiles, x, fy)
+        ):
+            return True
+    return False
+
+
+def paint_facade(
+    wx: int, wy: int, window: bool = False, open_stories: int = 0, arch: bool = False
+) -> np.ndarray:
+    """Охра, руст, карниз. Дом Иохима / Гражданская, не кирпичная крышка клетки."""
+    height = TILE2D * FACADE_TALL
+    tile = np.empty((height, TILE2D, 3), dtype=np.uint8)
+    tile[:] = INK["ochre"]
+    for story in range(FACADE_TALL):
+        y0 = story * TILE2D
+        y1 = y0 + TILE2D
+        ground = story == FACADE_TALL - 1
+        if ground:
+            _frect(tile, 0, y0, TILE2D, y1, "ochre")
+            for y in range(y0, y1):
+                groove = (y - y0) % 4
+                if groove == 3:
+                    _frect(tile, 0, y, TILE2D, y + 1, "wood")
+                elif groove == 0:
+                    _frect(tile, 0, y, TILE2D, y + 1, "jamb")
+        else:
+            _frect(tile, 0, y0, TILE2D, y1, "ochre")
+            for y in range(y0, y1):
+                for x in range(TILE2D):
+                    n = (x + wx * 3 + y + story * 11) & 15
+                    if n == 0:
+                        _fput(tile, x, y, "paper")
+                    elif n == 8:
+                        _fput(tile, x, y, "jamb")
+            _frect(tile, 0, y1 - 2, TILE2D, y1 - 1, "ash")
+            _frect(tile, 0, y1 - 1, TILE2D, y1, "linen")
+        if wx % 4 == 0:
+            _frect(tile, 0, y0, 2, y1, "paper")
+            _frect(tile, 30, y0, 32, y1, "paper")
+        lit = _window_lit(wx, wy, story, window)
+        open_pane = bool(open_stories & (1 << story))
+        if arch and ground:
+            _frect(tile, 6, y0 + 4, 26, y1, "void")
+        else:
+            _bay_window(tile, y0, lit, open_pane)
+    _frect(tile, 0, 0, TILE2D, 2, "ash")
+    _frect(tile, 0, 2, TILE2D, 5, "linen")
+    _frect(tile, 0, 5, TILE2D, 6, "ash")
+    for x in range(1, TILE2D - 1, 3):
+        _frect(tile, x, 3, x + 2, 5, "paper")
+    return tile
+
+
+def paint_stucco_side() -> np.ndarray:
+    """Бок дома на улице: штукатурка, не крышка кирпича."""
+    tile = _blank("ochre")
+    for y in range(TILE2D):
+        if y % 4 == 3:
+            _rect(tile, 0, y, 32, y + 1, "jamb")
+        _put(tile, 0, y, "paper")
+        _put(tile, 31, y, "wood")
+    return tile
+
+
 def paint_picture(mask: int) -> np.ndarray:
     tile = paint_wall(mask)
     _rect(tile, 7, 5, 25, 22, "wood")
@@ -258,69 +603,82 @@ def paint_picture(mask: int) -> np.ndarray:
     return tile
 
 
-def _on_floor(wx: int, wy: int, stamp) -> np.ndarray:
-    tile = paint_floor(wx, wy)
+def _on_floor(wx: int, wy: int, stamp, ground: str = "clinic") -> np.ndarray:
+    tile = paint_floor(wx, wy, ground)
     stamp(tile)
     return tile
 
 
 def _bed(tile: np.ndarray) -> None:
-    _iso_shadow(tile, 16, 26, 13, 4, 5, 3)
-    _iso_box(tile, 4, 8, 28, 30, "wood", "soot", "soot", 6)
-    _rect(tile, 6, 10, 25, 22, "linen")
-    _rect(tile, 6, 10, 25, 16, "ash")
-    _rect(tile, 7, 11, 14, 15, "linen")
-    _rect(tile, 4, 6, 28, 10, "wood")
-    _rect(tile, 4, 6, 28, 8, "jamb")
+    """Почти вся клетка: рама, матрас, подушка. Как палата сверху, не куколка."""
+    _iso_shadow(tile, 16, 29, 15, 4, 3, 1)
+    _iso_box(tile, 1, 3, 31, 31, "wood", "soot", "soot", 5)
+    _rect(tile, 3, 7, 29, 25, "linen")
+    _rect(tile, 3, 8, 29, 20, "ash")
+    _rect(tile, 4, 9, 18, 17, "linen")
+    _rect(tile, 5, 10, 16, 15, "paper")
+    _rect(tile, 1, 3, 31, 8, "wood")
+    _rect(tile, 1, 3, 31, 5, "jamb")
+    _rect(tile, 28, 7, 31, 31, "soot")
 
 
 def _table(tile: np.ndarray) -> None:
-    _iso_shadow(tile, 16, 24, 12, 4, 5, 3)
-    _oval(tile, 18, 20, 10, 5, "wood")
-    _oval(tile, 16, 15, 10, 6, "jamb")
-    _oval(tile, 16, 15, 8, 4, "wood")
-    _put(tile, 13, 13, "ochre")
-    _put(tile, 15, 14, "paper")
-    _rect(tile, 10, 20, 12, 26, "wood")
-    _rect(tile, 21, 20, 23, 26, "wood")
-    _rect(tile, 10, 25, 12, 27, "soot")
-    _rect(tile, 21, 25, 23, 27, "soot")
+    """Круглый стол на три четверти клетки, не блюдце."""
+    _iso_shadow(tile, 17, 27, 14, 5, 4, 2)
+    _oval(tile, 16, 22, 14, 7, "soot")
+    _oval(tile, 16, 14, 14, 8, "wood")
+    _oval(tile, 16, 13, 12, 6, "jamb")
+    _oval(tile, 16, 13, 11, 5, "wood")
+    _rect(tile, 12, 12, 20, 14, "paper")
+    _put(tile, 11, 12, "ochre")
+    _put(tile, 18, 13, "ash")
+    _rect(tile, 7, 20, 10, 28, "wood")
+    _rect(tile, 22, 20, 25, 28, "wood")
+    _rect(tile, 7, 27, 10, 29, "soot")
+    _rect(tile, 22, 27, 25, 29, "soot")
 
 
 def _chair(tile: np.ndarray) -> None:
-    _iso_shadow(tile, 16, 26, 8, 3, 4, 3)
-    _iso_box(tile, 10, 16, 22, 26, "wood", "soot", "soot", 4)
-    _rect(tile, 11, 17, 20, 21, "jamb")
-    _rect(tile, 11, 6, 21, 17, "wood")
-    _rect(tile, 12, 7, 20, 16, "jamb")
-    _rect(tile, 19, 6, 21, 26, "soot")
-    _rect(tile, 12, 24, 14, 29, "wood")
-    _rect(tile, 18, 24, 20, 29, "wood")
+    """Стул меньше стола, но занимает клетку, не щепку."""
+    _iso_shadow(tile, 16, 28, 10, 4, 4, 2)
+    _iso_box(tile, 8, 16, 24, 29, "wood", "soot", "soot", 5)
+    _rect(tile, 10, 17, 22, 22, "jamb")
+    _rect(tile, 8, 4, 24, 17, "wood")
+    _rect(tile, 10, 6, 22, 16, "jamb")
+    _rect(tile, 21, 4, 24, 29, "soot")
+    _rect(tile, 10, 27, 13, 31, "wood")
+    _rect(tile, 19, 27, 22, 31, "wood")
 
 
 def _cabinet(tile: np.ndarray) -> None:
-    _iso_shadow(tile, 16, 28, 11, 3, 5, 2)
-    _iso_box(tile, 6, 2, 26, 30, "wood", "soot", "soot", 6)
-    _rect(tile, 8, 5, 23, 14, "jamb")
-    _rect(tile, 8, 16, 23, 23, "jamb")
-    _rect(tile, 15, 5, 17, 23, "wood")
-    _put(tile, 21, 9, "brass")
-    _put(tile, 21, 19, "brass")
-    _rect(tile, 6, 2, 26, 5, "graphite")
-    _rect(tile, 6, 2, 9, 5, "ochre")
+    """Шкаф к стене: створки и карниз на всю клетку."""
+    _iso_shadow(tile, 16, 29, 14, 3, 4, 1)
+    _iso_box(tile, 2, 1, 30, 31, "wood", "soot", "soot", 6)
+    _rect(tile, 4, 5, 14, 14, "jamb")
+    _rect(tile, 16, 5, 27, 14, "jamb")
+    _rect(tile, 4, 16, 14, 24, "jamb")
+    _rect(tile, 16, 16, 27, 24, "jamb")
+    _rect(tile, 14, 5, 16, 24, "wood")
+    _put(tile, 12, 9, "brass")
+    _put(tile, 25, 9, "brass")
+    _put(tile, 12, 19, "brass")
+    _put(tile, 25, 19, "brass")
+    _rect(tile, 2, 1, 30, 4, "graphite")
+    _rect(tile, 2, 1, 6, 4, "ochre")
 
 
 def _desk(tile: np.ndarray) -> None:
-    _iso_shadow(tile, 16, 26, 13, 4, 5, 3)
-    _iso_box(tile, 3, 14, 29, 28, "wood", "soot", "soot", 5)
-    _rect(tile, 5, 16, 26, 19, "jamb")
-    _rect(tile, 5, 8, 16, 15, "paper")
-    _rect(tile, 6, 8, 16, 10, "ash")
-    _rect(tile, 7, 11, 14, 13, "graphite")
-    _rect(tile, 21, 11, 26, 16, "brass")
-    _put(tile, 23, 12, "lamp")
-    _rect(tile, 5, 24, 8, 30, "wood")
-    _rect(tile, 23, 24, 26, 30, "wood")
+    """Письменный стол: крышка на клетку, бумага и чернильница."""
+    _iso_shadow(tile, 16, 28, 15, 4, 4, 2)
+    _iso_box(tile, 1, 10, 31, 30, "wood", "soot", "soot", 6)
+    _rect(tile, 3, 12, 28, 16, "jamb")
+    _rect(tile, 3, 4, 18, 12, "paper")
+    _rect(tile, 4, 5, 17, 7, "ash")
+    _rect(tile, 6, 8, 15, 10, "graphite")
+    _rect(tile, 22, 6, 29, 14, "brass")
+    _put(tile, 25, 8, "lamp")
+    _rect(tile, 3, 26, 7, 31, "wood")
+    _rect(tile, 24, 26, 28, 31, "wood")
 
 
 def _lamp(tile: np.ndarray) -> None:
@@ -356,8 +714,8 @@ def _potion(tile: np.ndarray) -> None:
     _put(tile, 16, 11, "linen")
 
 
-def paint_door(char: str, wx: int = 0, wy: int = 0) -> np.ndarray:
-    tile = paint_floor(wx, wy)
+def paint_door(char: str, wx: int = 0, wy: int = 0, ground: str = "clinic") -> np.ndarray:
+    tile = paint_floor(wx, wy, ground)
     _iso_shadow(tile, 16, 26, 11, 4, 4, 3)
     if char == "'":
         _iso_box(tile, 2, 4, 9, 30, "jamb", "soot", "soot", 5)
@@ -374,8 +732,8 @@ def paint_door(char: str, wx: int = 0, wy: int = 0) -> np.ndarray:
     return tile
 
 
-def paint_stairs(up: bool, wx: int = 0, wy: int = 0) -> np.ndarray:
-    tile = paint_floor(wx, wy)
+def paint_stairs(up: bool, wx: int = 0, wy: int = 0, ground: str = "clinic") -> np.ndarray:
+    tile = paint_floor(wx, wy, ground)
     _iso_shadow(tile, 16, 27, 12, 4, 4, 2)
     for i in range(5):
         y0 = 4 + i * 5
@@ -385,12 +743,37 @@ def paint_stairs(up: bool, wx: int = 0, wy: int = 0) -> np.ndarray:
     return tile
 
 
-def paint_exit(wx: int = 0, wy: int = 0) -> np.ndarray:
-    tile = paint_floor(wx, wy)
+def paint_exit(wx: int = 0, wy: int = 0, ground: str = "clinic") -> np.ndarray:
+    tile = paint_floor(wx, wy, ground)
     _iso_shadow(tile, 16, 26, 10, 4, 4, 3)
     _iso_box(tile, 8, 4, 24, 30, "ice", "canal", "soot", 6)
     _rect(tile, 10, 6, 21, 22, "frost")
     _rect(tile, 14, 6, 18, 22, "ice")
+    return tile
+
+
+def paint_fog_gate(
+    wx: int = 0, wy: int = 0, ground: str = "street", density: float = 1.0
+) -> np.ndarray:
+    """Выход в вате. Плотность 1 — густой, меньше — редеет, пол виден."""
+    tile = paint_floor(wx, wy, ground)
+    d = max(0.12, min(1.0, float(density)))
+    for y in range(TILE2D):
+        for x in range(TILE2D):
+            gx = wx * TILE2D + x
+            gy = wy * TILE2D + y
+            wisp = (gx * 13 + gy * 7 + gx * gy) & 255
+            swirl = 0.5 + 0.5 * math.sin(gx * 0.18 + gy * 0.11)
+            cover = (wisp / 255.0) * 0.55 + swirl * 0.45
+            if cover < 1.0 - 0.82 * d:
+                continue
+            if wisp % 5 == 0:
+                ink = "linen"
+            elif wisp % 3 == 0:
+                ink = "frost"
+            else:
+                ink = "ash"
+            _mix_px(tile, x, y, ink, 0.28 + 0.55 * d)
     return tile
 
 
@@ -421,29 +804,40 @@ _STAMPS = {
 }
 
 
-def paint_cell(char: str, mask: int = 0, wx: int = 0, wy: int = 0) -> np.ndarray:
+def paint_cell(
+    char: str,
+    mask: int = 0,
+    wx: int = 0,
+    wy: int = 0,
+    ground: str = "clinic",
+    fog: float = 0.0,
+) -> np.ndarray:
     src = {"~": "≈", ")": "!"}.get(char, char)
     if src == " " or src == "":
         return paint_void()
     if src == "#":
+        if ground == "street":
+            return paint_stucco_side()
         return paint_wall(mask)
     if src == "W":
         return paint_window(mask)
     if src == '"':
         return paint_picture(mask)
     if src in {"D", "d", "'"}:
-        return paint_door(src, wx, wy)
+        return paint_door(src, wx, wy, ground)
     if src == "S":
-        return paint_stairs(True, wx, wy)
+        return paint_stairs(True, wx, wy, ground)
     if src == "s":
-        return paint_stairs(False, wx, wy)
+        return paint_stairs(False, wx, wy, ground)
     if src == "E":
-        return paint_exit(wx, wy)
+        if ground == "street":
+            return paint_floor(wx, wy, ground)
+        return paint_exit(wx, wy, ground)
     if src == "=":
         return paint_canal(wx, wy)
     if src in _STAMPS:
-        return _on_floor(wx, wy, _STAMPS[src])
-    return paint_floor(wx, wy)
+        return _on_floor(wx, wy, _STAMPS[src], ground)
+    return paint_floor(wx, wy, ground)
 
 
 def _silhouette_outline(tile: np.ndarray, name: str = "soot") -> None:

@@ -550,7 +550,9 @@ class Renderer:
         y = hud_y + 2
         bottom = self.screen_height - 2
         if chart_note:
-            for line in self._wrap_text(chart_note, inner)[:2]:
+            wrapped = self._wrap_text(chart_note, inner)
+            room = max(1, bottom - y)
+            for line in wrapped[:room]:
                 if y > bottom:
                     break
                 self.console.print(2, y, line[:inner], fg=COLOR_DIALOGUE)
@@ -1083,6 +1085,8 @@ class Renderer:
                             player_fov_radius: int = 7):
         """Отрисовать видимые источники света."""
         for light in light_sources:
+            if (light.get("type") or "") == "ember" or not light.get("symbol"):
+                continue
             light_x = light['x']
             light_y = light['y']
             light_radius = light.get('radius', 5)

@@ -432,6 +432,38 @@ class GameEngine:
                     'intensity': float(lt['intensity'] or 0),
                     'flicker': bool(lt.get('flicker', 0)),
                 })
+        lamps = {(item['x'], item['y']) for item in lights}
+
+        def near_lamp(x: int, y: int, reach: int) -> bool:
+            for lx, ly in lamps:
+                if abs(lx - x) + abs(ly - y) <= reach:
+                    return True
+            return False
+
+        for y, row in enumerate(self.current_map):
+            for x, tile in enumerate(row):
+                if tile in "BTOC" and not near_lamp(x, y, 2):
+                    lights.append({
+                        'x': x,
+                        'y': y,
+                        'type': 'ember',
+                        'symbol': '',
+                        'color': '',
+                        'radius': 2,
+                        'intensity': 0.38,
+                        'flicker': True,
+                    })
+                elif tile == "." and (x * 13 + y * 29) % 14 == 0 and not near_lamp(x, y, 3):
+                    lights.append({
+                        'x': x,
+                        'y': y,
+                        'type': 'ember',
+                        'symbol': '',
+                        'color': '',
+                        'radius': 1,
+                        'intensity': 0.28,
+                        'flicker': True,
+                    })
         return lights
 
     def _init_fov(self, explored=None):
@@ -521,9 +553,7 @@ class GameEngine:
         if saved:
             self.current_map = [row[:] for row in saved['tiles']]
             self.entities = list(saved['entities'])
-            self.light_sources = list(saved.get('light_sources') or [])
-            if not self.light_sources:
-                self.light_sources = self._collect_light_sources()
+            self.light_sources = self._collect_light_sources()
             self._init_fov(saved.get('explored'))
         else:
             if map_id == BRED_MAP_ID:
@@ -1875,7 +1905,7 @@ class GameEngine:
             if 'fog_house' not in self.flags:
                 self.flags.add('fog_house')
                 self.add_message(
-                    "Туман редеет у камня. Доходный дом. Крыльцо дальше на восток — не титры."
+                    "Туман редеет у камня. Канал дальше на восток — не титры."
                 )
             return
         if 'fog_blocked' not in self.flags:
@@ -2072,7 +2102,10 @@ class GameEngine:
             self.add_message("Проход никуда не ведёт.")
             return
 
-        if connection.get("target_map_id") == "street_tenement":
+        if (
+            connection.get("target_map_id") == "street_canal_east"
+            and self.current_map_id == "street_outside"
+        ):
             if not self.player:
                 return
             if self.player.san < 30:

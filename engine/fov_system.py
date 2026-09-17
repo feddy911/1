@@ -65,6 +65,132 @@ class FOVSystem:
             return True
         return False
     
+    def _has_los(
+        self,
+        x0: int,
+        y0: int,
+        x1: int,
+        y1: int,
+        map_tiles: List[List[str]],
+    ) -> bool:
+        """Прямая без стены между клетками. Саму цель можно подсветить."""
+        n = max(abs(x1 - x0), abs(y1 - y0))
+        if n <= 1:
+            return True
+        for i in range(1, n):
+            ix = int(round(x0 + (x1 - x0) * i / n))
+            iy = int(round(y0 + (y1 - y0) * i / n))
+            if (ix, iy) in ((x0, y0), (x1, y1)):
+                continue
+            if self._is_blocked(ix, iy, map_tiles):
+                return False
+        return True
+
+    def _window_normal(
+        self,
+        sx: int,
+        sy: int,
+        map_tiles: List[List[str]],
+    ) -> Optional[tuple]:
+        """Окно — ламбертов полушар внутрь комнаты, не 360°."""
+        for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+            bx, by = sx - dx, sy - dy
+            fx, fy = sx + dx, sy + dy
+            behind = (
+                True
+                if not (0 <= bx < self.width and 0 <= by < self.height)
+                else self._is_blocked(bx, by, map_tiles)
+            )
+            front = (
+                False
+                if not (0 <= fx < self.width and 0 <= fy < self.height)
+                else not self._is_blocked(fx, fy, map_tiles)
+            )
+            if behind and front:
+                return (dx, dy)
+        return None
+
+    @staticmethod
+    def _photometric(
+        dist: float,
+        radius: float,
+        intensity: float,
+        kind: str,
+        cosine: float = 1.0,
+    ) -> float:
+        """Пятно по диаграмме, не спицы лучей.
+
+        Свеча / уголёк — тип A, I / r² (полярный круг).
+        Фонарь на столбе — изолюкс пола E = I·h / (r²+h²)^(3/2).
+        Окно — ламберт: I(φ)·cosφ / r², полушар.
+        Обрез по радиусу, как луч 50% в IES, чтобы не лить через карту.
+        """
+        if radius <= 0 or dist > radius + 0.51:
+            return 0.0
+        edge = max(0.0, 1.0 - (dist / (radius + 0.35)) ** 2)
+        if kind == "window":
+            r0 = 0.7
+            return intensity * max(0.0, cosine) / (dist * dist + r0 * r0) * edge
+        if kind == "lantern":
+            height = 1.15
+            d2 = dist * dist + height * height
+            return intensity * height / (d2 ** 1.5) * edge
+        r0 = 0.5
+        return intensity / (dist * dist + r0 * r0) * edge
+
+    def _add_source(
+        self,
+        source: Dict,
+        map_tiles: List[List[str]],
+    ) -> None:
+        sx = int(source["x"])
+        sy = int(source["y"])
+        radius = float(source.get("radius", 5) or 0)
+        intensity = float(source.get("intensity", 1.0) or 0)
+        symbol = source.get("symbol") or ""
+        kind_id = source.get("type") or ""
+        is_window = symbol == "W" or kind_id == "window"
+        is_flame = (not is_window) and (
+            symbol == "*" or kind_id in ("ember", "candle", "lamp", "torch", "gas_lamp")
+        )
+        if is_flame:
+            self.flames.append((sx, sy, radius, intensity))
+        if is_window:
+            photo = "window"
+            normal = self._window_normal(sx, sy, map_tiles)
+        elif kind_id in ("ember", "candle") or (is_flame and radius <= 2 and symbol != "*"):
+            photo = "point"
+            normal = None
+        else:
+            photo = "lantern"
+            normal = None
+        reach = max(1, int(math.ceil(radius)) + 1)
+        y0 = max(0, sy - reach)
+        y1 = min(self.height, sy + reach + 1)
+        x0 = max(0, sx - reach)
+        x1 = min(self.width, sx + reach + 1)
+        for iy in range(y0, y1):
+            for ix in range(x0, x1):
+                dist = math.hypot(ix - sx, iy - sy)
+                cosine = 1.0
+                if photo == "window" and normal is not None:
+                    if dist < 1e-6:
+                        cosine = 1.0
+                    else:
+                        cosine = ((ix - sx) * normal[0] + (iy - sy) * normal[1]) / dist
+                    if cosine <= 0.0 and dist > 0.51:
+                        continue
+                added = self._photometric(dist, radius, intensity, photo, cosine)
+                if added <= 1e-4:
+                    continue
+                if not self._has_los(sx, sy, ix, iy, map_tiles):
+                    continue
+                self.illumination[iy, ix] += added
+                if is_flame:
+                    self.flame_illumination[iy, ix] += added
+                if is_window:
+                    self.window_illumination[iy, ix] += added
+
     def compute_fov(self, player_x: int, player_y: int, 
                     map_tiles: List[List[str]],
                     light_sources: List[Dict] = None):
@@ -105,52 +231,9 @@ class FOVSystem:
                 x += dx
                 y += dy
         
-        # === 2. Освещение от источников света с затуханием ===
         if light_sources:
             for source in light_sources:
-                sx = source['x']
-                sy = source['y']
-                radius = source.get('radius', 5)
-                intensity = source.get('intensity', 1.0)
-                symbol = source.get('symbol', '*')
-                is_flame = symbol == '*'
-                is_window = symbol == 'W'
-                if is_flame:
-                    self.flames.append((sx, sy, radius, intensity))
-                
-                for angle_deg in range(num_rays):
-                    angle_rad = math.radians(angle_deg)
-                    dx = math.cos(angle_rad)
-                    dy = math.sin(angle_rad)
-                    
-                    x = float(sx) + 0.5
-                    y = float(sy) + 0.5
-                    
-                    for step in range(max(1, radius) * 2):
-                        ix = int(x)
-                        iy = int(y)
-                        
-                        if not (0 <= ix < self.width and 0 <= iy < self.height):
-                            break
-                        
-                        dist = math.sqrt((ix - sx) ** 2 + (iy - sy) ** 2)
-                        
-                        if radius > 0 and dist <= radius:
-                            t = max(0.0, 1.0 - (dist / radius))
-                            # Окно: круче к стеклу, иначе зрение @ заливает пятно.
-                            falloff = (t ** 1.85) if is_window else t
-                            added = intensity * falloff
-                            self.illumination[iy, ix] += added
-                            if is_flame:
-                                self.flame_illumination[iy, ix] += added
-                            if is_window:
-                                self.window_illumination[iy, ix] += added
-                        
-                        if (ix, iy) != (sx, sy) and self._is_blocked(ix, iy, map_tiles):
-                            break
-                        
-                        x += dx
-                        y += dy
+                self._add_source(source, map_tiles)
         
         # Обновляем explored
         self.explored = np.logical_or(self.explored, self.current_fov)

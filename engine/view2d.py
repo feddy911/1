@@ -15,9 +15,13 @@ import tcod
 from engine.battle_stage import load_stage, stage_kind_for
 from engine.clinic_font import BUNDLED_FONT
 from engine.clinic_tiles import wall_neighbor_mask
+from engine.constants import UNARMED_DAMAGE_DIE
+from engine.equipment import EQUIP_SLOTS, empty_fill, item_in_slot, slot_fill_name
 from engine.look_memory import is_armed, worn_look
+from engine.paintings import oil_id_for_item
 from engine.palette import INKS, hex_to_rgb
 from engine.party import companion_ids
+from engine.quest_system import fog_veil
 from engine.renderer import load_oil_pixels
 from engine.talent_system import (
     SAN_FLOOR,
@@ -29,19 +33,32 @@ from engine.talent_system import (
 )
 from engine.tiles2d import (
     CELL,
+    FACADE_TALL,
     SCALE,
+    TILE2D,
     VOID_RGB,
     flame_flicker,
+    is_behind_house,
+    is_house_gate,
+    is_passage,
+    is_quay_wall,
+    is_south_facade,
+    facade_interior,
+    is_under_facade,
     light_tint,
     overlay,
     paint_cell,
+    paint_facade,
+    paint_gate,
     paint_person,
     paint_shadow,
+    paint_wall,
+    transition_dir,
 )
 
 MAP_COLS = 16
-MAP_ROWS = 10
-HUD_H = 200
+MAP_ROWS = 12
+HUD_H = 80
 HINT_H = 24
 LINE_H = 18
 WIN_W = MAP_COLS * CELL
@@ -50,10 +67,15 @@ MAP_H = MAP_ROWS * CELL
 # Масло в игре 3:4; клетка tcod 11×10 давала 176×240 и чуть плющила.
 FACE_W = 180
 FACE_H = 240
-OVERLAY_W = 720
+OVERLAY_W = 760
 LIGHT_RES = 4
 FIGHT_FACE_W = 90
 FIGHT_FACE_H = 120
+DOLL_SCALE = 4
+SLOT_W = 116
+SLOT_H = 76
+SLOT_GAP = 8
+SLOT_ICON = 28
 
 VOID = hex_to_rgb(INKS["void"])
 SOOT = hex_to_rgb(INKS["soot"])
@@ -64,6 +86,29 @@ BLOOD = hex_to_rgb(INKS["blood"])
 RUST = hex_to_rgb(INKS["rust"])
 SLATE = hex_to_rgb(INKS["slate"])
 LAMP = hex_to_rgb(INKS["lamp"])
+WOOD = hex_to_rgb(INKS["wood"])
+ICE = hex_to_rgb(INKS["ice"])
+OCHRE = hex_to_rgb(INKS["ochre"])
+GRAPHITE = hex_to_rgb(INKS["graphite"])
+FROST = hex_to_rgb(INKS["frost"])
+FOG_EAST = 45
+FOG_EDGE_SPAN = 16.0
+FOG_EDGE_THICK = 0.94
+FOG_EDGE_THIN = 0.22
+FOG_BASE_THICK = 0.16
+FOG_BASE_THIN = 0.07
+
+
+def edge_fog(fx: float, map_w: int, veil: float) -> float:
+    """Плотность ваты 0…1. К краю карты — почти глухая; после правды — дымка."""
+    width = max(1.0, float(map_w))
+    span = min(FOG_EAST, width * 0.35, FOG_EDGE_SPAN)
+    start = width - 1.0 - span
+    t = max(0.0, min(1.0, (float(fx) - start) / span))
+    t = t * t * (3.0 - 2.0 * t)
+    milk = FOG_BASE_THIN + (FOG_BASE_THICK - FOG_BASE_THIN) * float(veil)
+    wall = FOG_EDGE_THIN + (FOG_EDGE_THICK - FOG_EDGE_THIN) * float(veil)
+    return min(0.96, milk + t * (wall - milk))
 
 
 class QuitEvent:
@@ -217,12 +262,42 @@ def _near_seen(fov, x: int, y: int) -> bool:
     return False
 
 
+def _ground_of(engine) -> str:
+    mid = getattr(engine, "current_map_id", "") or ""
+    if "traktir" in mid or "tenement" in mid:
+        return "wood"
+    if "street" in mid:
+        return "street"
+    return "clinic"
+
+
 def _fit_wh(src_w: int, src_h: int, max_w: int, max_h: int) -> Tuple[int, int]:
     """Вписать картинку в клетку, не растягивая 3:4."""
     if src_w <= 0 or src_h <= 0 or max_w <= 0 or max_h <= 0:
         return max(1, max_w), max(1, max_h)
     scale = min(max_w / src_w, max_h / src_h)
     return max(1, int(round(src_w * scale))), max(1, int(round(src_h * scale)))
+
+
+def doll_slot_rects(core: pygame.Rect) -> dict:
+    """Рамки слотов вокруг фигуры. Не пересекаются."""
+    col_h = SLOT_H * 3 + SLOT_GAP * 2
+    col_y = core.centery - col_h // 2
+    cx = core.centerx - SLOT_W // 2
+    left = core.x - SLOT_W - SLOT_GAP
+    right = core.right + SLOT_GAP
+    step = SLOT_H + SLOT_GAP
+    return {
+        "head": pygame.Rect(cx, core.y - SLOT_H - SLOT_GAP, SLOT_W, SLOT_H),
+        "cloak": pygame.Rect(left, col_y, SLOT_W, SLOT_H),
+        "hands": pygame.Rect(right, col_y, SLOT_W, SLOT_H),
+        "body": pygame.Rect(left, col_y + step, SLOT_W, SLOT_H),
+        "main_hand": pygame.Rect(right, col_y + step, SLOT_W, SLOT_H),
+        "belt": pygame.Rect(left, col_y + step * 2, SLOT_W, SLOT_H),
+        "off_hand": pygame.Rect(right, col_y + step * 2, SLOT_W, SLOT_H),
+        "legs": pygame.Rect(cx, core.bottom + SLOT_GAP, SLOT_W, SLOT_H),
+        "feet": pygame.Rect(cx, core.bottom + SLOT_GAP + step, SLOT_W, SLOT_H),
+    }
 
 
 class View2D:
@@ -237,16 +312,21 @@ class View2D:
         path = str(_font_path())
         try:
             self.font = pygame.font.Font(path, 16)
-            self.small = pygame.font.Font(path, 14)
+            self.small = pygame.font.Font(path, 13)
+            self.tiny = pygame.font.Font(path, 12)
         except (FileNotFoundError, OSError):
             self.font = pygame.font.SysFont("consolas", 16)
-            self.small = pygame.font.SysFont("consolas", 14)
+            self.small = pygame.font.SysFont("consolas", 13)
+            self.tiny = pygame.font.SysFont("consolas", 12)
         self._tile_cache = {}
         self._letter_cache = {}
         self._oil_cache = {}
         self._base_rgb = {}
         self._face = (0, 1)
         self._last_xy = None
+        self._ground = "clinic"
+        self._map_id = ""
+        self._fog_veil = 1.0
 
     def close(self):
         self._tile_cache.clear()
@@ -274,6 +354,9 @@ class View2D:
         return out
 
     def draw(self, engine):
+        self._ground = _ground_of(engine)
+        self._map_id = getattr(engine, "current_map_id", "") or ""
+        self._fog_veil = fog_veil(getattr(engine, "flags", None))
         self.screen.fill(VOID)
         state = getattr(engine, "state", "")
         if state == "class_selection":
@@ -297,11 +380,7 @@ class View2D:
             if getattr(engine, "is_talents_open", False) and engine.player:
                 self._draw_talents(engine)
             if getattr(engine, "is_character_open", False) and engine.player:
-                self._draw_list(
-                    "НА СЕБЕ",
-                    [f"{slot}: {held or 'пусто'}" for slot, held in (getattr(engine.player, "equipped", None) or {}).items()],
-                    getattr(engine, "character_selected_index", 0),
-                )
+                self._draw_character(engine)
             if getattr(engine, "is_shop_open", False) and engine.player:
                 self._draw_shop(engine)
             if getattr(engine, "oil_overlay", None):
@@ -343,6 +422,10 @@ class View2D:
         fov = getattr(engine, "fov_system", None)
         sprites = bool(getattr(engine, "use_sprites", True))
         now = time.perf_counter()
+        px = int(engine.player.x)
+        py = int(engine.player.y)
+        outside = self._ground == "street" and not is_behind_house(tiles, px, py)
+        facades = []
         for sy in range(MAP_ROWS):
             for sx in range(MAP_COLS):
                 wx, wy = cam_x + sx, cam_y + sy
@@ -354,18 +437,176 @@ class View2D:
                 if not _near_seen(fov, wx, wy):
                     self.screen.fill(VOID, (*dest, CELL, CELL))
                     continue
+                if (
+                    outside
+                    and is_behind_house(tiles, wx, wy)
+                    and not is_under_facade(tiles, wx, wy)
+                ):
+                    self.screen.fill(VOID, (*dest, CELL, CELL))
+                    continue
                 char = tiles[wy][wx]
+                seen = fov.is_visible(wx, wy) if fov else True
+                if sprites and outside and is_passage(tiles, wx, wy):
+                    if seen:
+                        iy, ich = facade_interior(tiles, wx, wy, FACADE_TALL - 1)
+                        if iy is not None:
+                            surf = self._tile_surface(ich, tiles, wx, iy)
+                            self.screen.blit(surf, dest)
+                    surf = self._gate_surface(wx, wy)
+                    self.screen.blit(surf, dest)
+                    continue
+                if sprites and outside and is_south_facade(tiles, wx, wy):
+                    arch = is_passage(tiles, wx - 1, wy) or is_passage(
+                        tiles, wx + 1, wy
+                    )
+                    open_stories = 0
+                    if seen:
+                        for story in range(FACADE_TALL):
+                            iy, _ich = facade_interior(tiles, wx, wy, story)
+                            if iy is not None:
+                                open_stories |= 1 << story
+                    if arch and seen:
+                        iy, ich = facade_interior(tiles, wx, wy, FACADE_TALL - 1)
+                        if iy is not None:
+                            surf = self._tile_surface(ich, tiles, wx, iy)
+                            self.screen.blit(surf, dest)
+                        else:
+                            self.screen.fill(VOID, (*dest, CELL, CELL))
+                    else:
+                        self.screen.fill(VOID, (*dest, CELL, CELL))
+                    facades.append(
+                        (sx, sy, wx, wy, char == "W", open_stories, arch and seen)
+                    )
+                    continue
                 if sprites:
                     surf = self._tile_surface(char, tiles, wx, wy)
                 else:
                     surf = self._letter_surface(char, visible)
                 self.screen.blit(surf, dest)
+        if sprites:
+            for entity in getattr(engine, "entities", None) or []:
+                ex = getattr(entity, "x", None)
+                ey = getattr(entity, "y", None)
+                if (
+                    outside
+                    and ex is not None
+                    and ey is not None
+                    and is_behind_house(tiles, int(ex), int(ey))
+                ):
+                    self._blit_actor(engine, entity, cam_x, cam_y, now)
+            for sx, sy, wx, wy, lit, open_stories, arch in facades:
+                if open_stories:
+                    for story in range(FACADE_TALL):
+                        if not (open_stories & (1 << story)):
+                            continue
+                        iy, ich = facade_interior(tiles, wx, wy, story)
+                        if iy is None:
+                            continue
+                        story_dest = (
+                            sx * CELL,
+                            (sy - (FACADE_TALL - 1) + story) * CELL,
+                        )
+                        self.screen.blit(
+                            self._tile_surface(ich, tiles, wx, iy), story_dest
+                        )
+                surf = self._facade_surface(wx, wy, lit, open_stories, arch)
+                dest = (sx * CELL, (sy - (FACADE_TALL - 1)) * CELL)
+                self.screen.blit(surf, dest)
         for entity in getattr(engine, "entities", None) or []:
+            ex = getattr(entity, "x", None)
+            ey = getattr(entity, "y", None)
+            if (
+                outside
+                and ex is not None
+                and ey is not None
+                and is_behind_house(tiles, int(ex), int(ey))
+            ):
+                continue
             self._blit_actor(engine, entity, cam_x, cam_y, now)
         self._blit_actor(engine, engine.player, cam_x, cam_y, now)
         if sprites:
             glow = self._light_overlay(engine, cam_x, cam_y, now)
             self.screen.blit(glow, (0, 0), special_flags=pygame.BLEND_RGB_MULT)
+            if self._ground == "street":
+                self.screen.blit(
+                    self._street_mist(engine, cam_x, cam_y, now, map_w), (0, 0)
+                )
+            self._draw_transition_marks(engine, tiles, cam_x, cam_y, now, map_h, map_w)
+        if getattr(engine, "state", "") not in ("ending", "game_over"):
+            self._draw_meters(engine.player, 12, 10)
+
+    def _transition_cells(self, engine, tiles):
+        cells = []
+        seen = set()
+        db = getattr(engine, "db", None)
+        mid = getattr(engine, "current_map_id", "") or ""
+        if db is not None:
+            for conn in db.get_map_connections(mid) or ():
+                x = int(conn.get("source_x", -1))
+                y = int(conn.get("source_y", -1))
+                if (x, y) in seen:
+                    continue
+                seen.add((x, y))
+                cells.append((x, y))
+        return cells
+
+    def _arrow_pts(self, dx: int, dy: int, cx: int, cy: int):
+        tip = [(0, -13), (-8, 5), (8, 5)]
+        out = []
+        for x, y in tip:
+            if dx == 0 and dy < 0:
+                px, py = x, y
+            elif dx == 0 and dy > 0:
+                px, py = -x, -y
+            elif dx > 0:
+                px, py = -y, x
+            else:
+                px, py = y, -x
+            out.append((cx + px, cy + py))
+        return out
+
+    def _transition_mark(self, dx: int, dy: int) -> pygame.Surface:
+        key = ("tmark", int(dx), int(dy))
+        cached = self._tile_cache.get(key)
+        if cached is not None:
+            return cached
+        surf = pygame.Surface((CELL, CELL), pygame.SRCALPHA)
+        cx, cy = CELL // 2, CELL // 2
+        for radius in range(26, 6, -2):
+            alpha = int(22 * (1.0 - radius / 26.0))
+            pygame.draw.circle(
+                surf, (FROST[0], FROST[1], FROST[2], alpha), (cx, cy), radius
+            )
+        pts = self._arrow_pts(dx, dy, cx, cy)
+        pygame.draw.polygon(
+            surf, (FROST[0], FROST[1], FROST[2], 96), pts
+        )
+        pygame.draw.polygon(
+            surf, (LINEN[0], LINEN[1], LINEN[2], 64), pts, 1
+        )
+        if len(self._tile_cache) > 4000:
+            self._tile_cache.clear()
+        self._tile_cache[key] = surf
+        return surf
+
+    def _draw_transition_marks(self, engine, tiles, cam_x, cam_y, now, map_h, map_w):
+        """Ореол и стрелка на клетке перехода. Вата, не неон."""
+        fov = getattr(engine, "fov_system", None)
+        pulse = 0.62 + 0.28 * math.sin(now * 1.35)
+        alpha = max(40, min(180, int(160 * pulse)))
+        for x, y in self._transition_cells(engine, tiles):
+            if not (0 <= y < map_h and 0 <= x < map_w):
+                continue
+            if not _near_seen(fov, x, y):
+                continue
+            sx, sy = x - cam_x, y - cam_y
+            if not (0 <= sx < MAP_COLS and 0 <= sy < MAP_ROWS):
+                continue
+            char = tiles[y][x] if tiles else "E"
+            dx, dy = transition_dir(tiles, x, y, char)
+            mark = self._transition_mark(dx, dy).copy()
+            mark.set_alpha(alpha)
+            self.screen.blit(mark, (sx * CELL, sy * CELL))
 
     def _light_overlay(self, engine, cam_x: int, cam_y: int, now: float) -> pygame.Surface:
         """Свет и взгляд — один гладкий градиент, не зубцы клетки."""
@@ -410,24 +651,120 @@ class View2D:
             surf = pygame.transform.scale(surf, (CELL, CELL))
         return surf
 
+    def _facade_surface(
+        self, wx: int, wy: int, window: bool, open_stories: int = 0, arch: bool = False
+    ):
+        key = ("facade", wx, wy, bool(window), int(open_stories), bool(arch))
+        cached = self._tile_cache.get(key)
+        if cached is not None:
+            return cached
+        surf = self._scale_n(paint_facade(wx, wy, window, open_stories, arch), SCALE)
+        surf.set_colorkey(tuple(int(c) for c in VOID_RGB))
+        if len(self._tile_cache) > 4000:
+            self._tile_cache.clear()
+        self._tile_cache[key] = surf
+        return surf
+
+    def _gate_surface(self, wx: int, wy: int):
+        key = ("gate", wx, wy)
+        cached = self._tile_cache.get(key)
+        if cached is not None:
+            return cached
+        surf = self._scale(paint_gate(wx, wy))
+        surf.set_colorkey(tuple(int(c) for c in VOID_RGB))
+        if len(self._tile_cache) > 4000:
+            self._tile_cache.clear()
+        self._tile_cache[key] = surf
+        return surf
+
+    def _fog_at(self, char: str, x: int) -> float:
+        return 0.0
+
+    def _street_mist(
+        self, engine, cam_x: int, cam_y: int, now: float, map_w: int
+    ) -> pygame.Surface:
+        """Вата к востоку. Фонарь в тумане — ореол, не конус."""
+        veil = float(getattr(self, "_fog_veil", 1.0))
+        lamps = []
+        for src in getattr(engine, "light_sources", None) or ():
+            if src.get("symbol") == "W":
+                continue
+            lamps.append(
+                (
+                    float(src.get("x", 0)) + 0.5,
+                    float(src.get("y", 0)) + 0.5,
+                    max(0.8, float(src.get("radius") or 1)),
+                )
+            )
+        res = 8
+        lw, lh = MAP_COLS * res, MAP_ROWS * res
+        rgba = np.zeros((lh, lw, 4), dtype=np.uint8)
+        for ly in range(lh):
+            for lx in range(lw):
+                fx = cam_x + (lx + 0.5) / res
+                fy = cam_y + (ly + 0.5) / res
+                n = 0.5 + 0.5 * math.sin(fx * 0.51 + now * 0.35) * math.sin(
+                    fy * 0.67 + fx * 0.18
+                )
+                wisp = 0.5 + 0.5 * math.sin(fx * 1.15 - now * 0.22 + fy * 0.4)
+                density = edge_fog(fx, map_w, veil)
+                alpha = density * (0.72 + 0.28 * n) * (0.55 + 0.45 * wisp)
+                glow = 0.0
+                for lx0, ly0, rad in lamps:
+                    d2 = (fx - lx0) ** 2 + (fy - ly0) ** 2
+                    sigma = 0.55 + 0.35 * rad
+                    glow = max(glow, math.exp(-d2 / (2.0 * sigma * sigma)))
+                alpha *= 1.0 - 0.62 * glow
+                alpha = min(0.96, max(0.0, alpha))
+                rgba[ly, lx, 0] = ASH[0]
+                rgba[ly, lx, 1] = ASH[1]
+                rgba[ly, lx, 2] = FROST[2]
+                rgba[ly, lx, 3] = int(alpha * 255)
+        src = pygame.image.frombuffer(rgba.tobytes(), (lw, lh), "RGBA")
+        return pygame.transform.smoothscale(
+            src.convert_alpha(), (MAP_COLS * CELL, MAP_ROWS * CELL)
+        )
+
+    def _cell_ground(self, tiles, x: int, y: int) -> str:
+        ground = getattr(self, "_ground", "clinic")
+        if ground == "street" and tiles and is_behind_house(tiles, x, y):
+            mid = getattr(self, "_map_id", "") or ""
+            if "canal" in mid:
+                return "wood"
+            return "clinic"
+        return ground
+
     def _paint_base(self, char: str, tiles, x: int, y: int) -> np.ndarray:
         mask_id = wall_neighbor_mask(tiles, x, y) if char in {"#", "W", '"'} else 0
-        key = (char, mask_id, x & 7, y & 7)
+        ground = self._cell_ground(tiles, x, y)
+        fog = self._fog_at(char, x)
+        quay = ground == "street" and is_quay_wall(tiles, x, y)
+        gate = ground == "street" and is_passage(tiles, x, y)
+        key = (char, mask_id, x, y, ground, round(fog, 1), quay, gate)
         cached = self._base_rgb.get(key)
         if cached is not None:
             return cached
-        rgb = paint_cell(char, mask_id, x, y)
+        if gate:
+            rgb = paint_gate(x, y)
+        elif quay and char in {"#", "W"}:
+            rgb = paint_wall(mask_id) if char == "#" else paint_cell(char, mask_id, x, y, ground, fog)
+        else:
+            rgb = paint_cell(char, mask_id, x, y, ground, fog)
+        if len(self._base_rgb) > 4000:
+            self._base_rgb.clear()
         self._base_rgb[key] = rgb
         return rgb
 
     def _tile_surface(self, char, tiles, x, y):
         mask_id = wall_neighbor_mask(tiles, x, y) if char in {"#", "W", '"'} else 0
-        key = (char, mask_id, x & 7, y & 7)
+        ground = self._cell_ground(tiles, x, y)
+        fog = self._fog_at(char, x)
+        key = (char, mask_id, x, y, ground, round(fog, 1))
         cached = self._tile_cache.get(key)
         if cached is not None:
             return cached
         surf = self._scale(self._paint_base(char, tiles, x, y))
-        if len(self._tile_cache) > 800:
+        if len(self._tile_cache) > 4000:
             self._tile_cache.clear()
         self._tile_cache[key] = surf
         return surf
@@ -509,26 +846,19 @@ class View2D:
         pygame.draw.rect(self.screen, SOOT, (0, top, WIN_W, HUD_H))
         pygame.draw.line(self.screen, SLATE, (0, top), (WIN_W, top))
         pygame.draw.line(self.screen, SLATE, (0, hint_y), (WIN_W, hint_y))
-        occupation = getattr(player, "class_name", None) or "без занятия"
-        y = top + 8
-        log_stop = hint_y - 4
-        y = self._text(f"ДЕЛО · {occupation}", 12, y, PAPER, stop=log_stop)
-        y = self._text(
-            f"плоть {player.hp}/{player.max_hp}   воля {player.san}",
-            12,
-            y,
-            RUST,
-            stop=log_stop,
-        )
+        log_stop = hint_y - 2
+        y = top + 4
         quest = ""
         if getattr(engine, "quest_system", None):
             desc = engine.quest_system.get_active_quest_descriptions(getattr(engine, "flags", None) or set())
             if desc:
                 quest = desc[0]
+        lines = []
         if quest:
-            y = self._text(quest, 12, y, PAPER, width=68, stop=log_stop)
-        for msg in list(getattr(engine, "messages", None) or [])[-2:]:
-            y = self._text(msg, 12, y, ASH, width=68, stop=log_stop)
+            lines.extend(self._wrap_px(quest, WIN_W - 24))
+        lines.extend(list(getattr(engine, "messages", None) or [])[-1:])
+        for msg in lines:
+            y = self._text(msg, 12, y, ASH, width=120, stop=log_stop)
             if y >= log_stop:
                 break
         hand = "кулак"
@@ -539,7 +869,25 @@ class View2D:
                     hand = getattr(item, "name", "нож") or "нож"
                     break
         hint = f"в руке {hand} · e стол · i карман · t тетрадь · c на себе · F4 вид"
-        self._text(hint, 12, hint_y + 4, SLATE, width=72, stop=WIN_H)
+        self._text(hint, 12, hint_y + 4, SLATE, width=78, stop=WIN_H)
+
+    def _draw_meter(self, x: int, y: int, w: int, h: int, ratio: float, fill, label: str) -> None:
+        ratio = max(0.0, min(1.0, float(ratio)))
+        pygame.draw.rect(self.screen, SOOT, (x, y, w, h))
+        pygame.draw.rect(self.screen, fill, (x, y, int(w * ratio), h))
+        pygame.draw.rect(self.screen, PAPER, (x, y, w, h), 1)
+        text = self.tiny.render(label, True, LINEN)
+        self.screen.blit(text, (x + 6, y + max(0, (h - text.get_height()) // 2)))
+
+    def _draw_meters(self, player, x: int, y: int) -> None:
+        if player is None:
+            return
+        hp = int(getattr(player, "hp", 0) or 0)
+        hp_max = max(1, int(getattr(player, "max_hp", 1) or 1))
+        san = int(getattr(player, "san", 0) or 0)
+        san_max = max(1, int(getattr(player, "max_san", 100) or 100))
+        self._draw_meter(x, y, 176, 16, hp / hp_max, BLOOD, f"плоть {hp}/{hp_max}")
+        self._draw_meter(x, y + 20, 176, 16, san / san_max, ICE, f"воля {san}")
 
     def _char_w(self) -> int:
         return max(1, self.font.size("М")[0])
@@ -631,6 +979,147 @@ class View2D:
             )
         self._text("↑/↓ · e взять · t закрыть", box.x + 16, foot, SLATE, stop=WIN_H)
 
+    def _draw_character(self, engine):
+        player = engine.player
+        occupation = getattr(player, "class_name", None) or "без занятия"
+        fills = [
+            (slot_id, slot_name, slot_fill_name(player, slot_id))
+            for slot_id, slot_name in EQUIP_SLOTS
+        ]
+        selected = min(
+            max(0, int(getattr(engine, "character_selected_index", 0) or 0)),
+            len(fills) - 1,
+        )
+        stats = getattr(player, "stats", None) or {}
+        die = getattr(player, "damage_die", None) or UNARMED_DAMAGE_DIE
+        ac = getattr(player, "armor_class", 10)
+        fig = TILE2D * DOLL_SCALE
+        col_h = SLOT_H * 3 + SLOT_GAP * 2
+        head_block = SLOT_H + SLOT_GAP
+        foot_block = SLOT_H * 2 + SLOT_GAP
+        body_block = max(fig, col_h)
+        box = self._overlay_box(36 + head_block + body_block + foot_block + 56, OVERLAY_W)
+        self._fill_panel(box)
+        y = box.y + 10
+        y = self._text(f"НА СЕБЕ · {occupation}", box.x + 16, y, PAPER)
+        y = self._text(
+            f"удар {die} · броня {ac} · "
+            f"сила {int(stats.get('STR', 10) or 10)} "
+            f"ловкость {int(stats.get('DEX', 10) or 10)} "
+            f"тело {int(stats.get('CON', 10) or 10)} · "
+            f"ум {int(stats.get('INT', 10) or 10)} "
+            f"речь {int(stats.get('CHA', 10) or 10)} "
+            f"воля {int(stats.get('WILL', 10) or 10)}",
+            box.x + 16,
+            y,
+            ASH,
+            width=max(8, (box.width - 32) // self._char_w()),
+        )
+        core = pygame.Rect(0, 0, fig, fig)
+        core.centerx = box.centerx
+        core.y = y + head_block + max(0, (body_block - fig) // 2)
+        look = worn_look(player)
+        armed = is_armed(player)
+        who = getattr(player, "id", "") or ""
+        shadow = self._scale_n(paint_shadow(), DOLL_SCALE)
+        body = self._scale_n(paint_person("player", look, armed, (0, 1), who), DOLL_SCALE)
+        shadow.set_colorkey(tuple(int(c) for c in VOID_RGB))
+        body.set_colorkey(tuple(int(c) for c in VOID_RGB))
+        self.screen.blit(shadow, core.topleft)
+        self.screen.blit(body, core.topleft)
+        pygame.draw.rect(self.screen, GRAPHITE, core.inflate(8, 8), 1)
+        places = doll_slot_rects(core)
+        for i, (slot_id, slot_name, fill) in enumerate(fills):
+            rect = places.get(slot_id)
+            if rect is None:
+                continue
+            self._draw_slot_card(
+                rect,
+                slot_name,
+                fill,
+                i == selected,
+                item_in_slot(player, slot_id),
+            )
+        slot_id, slot_name, fill = fills[selected]
+        vacant = empty_fill(slot_id)
+        if fill != vacant:
+            note = f"{slot_name}: {fill}."
+        elif slot_id == "main_hand":
+            note = "правая рука: кулак 1d3."
+        else:
+            note = f"{slot_name}: пусто."
+        foot = box.bottom - 22
+        chars = max(8, (box.width - 32) // self._char_w())
+        self._text(note, box.x + 16, foot - LINE_H, PAPER, width=chars, stop=foot)
+        self._text("↑/↓ слот · e надеть / снять · c закрыть", box.x + 16, foot, SLATE, stop=WIN_H)
+
+    def _scale_n(self, rgb: np.ndarray, n: int) -> pygame.Surface:
+        surf = pygame.surfarray.make_surface(np.transpose(rgb, (1, 0, 2)))
+        if n != 1:
+            surf = pygame.transform.scale(surf, (rgb.shape[1] * n, rgb.shape[0] * n))
+        return surf
+
+    def _clip_label(self, text: str, x: int, y: int, color, clip: pygame.Rect) -> None:
+        prev = self.screen.get_clip()
+        self.screen.set_clip(clip)
+        raw = text or ""
+        max_w = max(8, clip.right - x - 2)
+        while raw and self.tiny.size(raw)[0] > max_w:
+            raw = raw[:-1]
+        if raw != (text or "") and len(raw) > 1:
+            raw = raw[:-1] + "…"
+        self.screen.blit(self.tiny.render(raw, True, color), (x, y))
+        self.screen.set_clip(prev)
+
+    def _item_swatch(self, item):
+        kind = getattr(item, "type", "") or ""
+        look = getattr(item, "look", "") or ""
+        item_id = getattr(item, "id", "") or ""
+        if kind == "weapon":
+            return SLATE
+        if look == "tenant" or item_id == "item_coat":
+            return WOOD
+        if kind == "clothing":
+            return LINEN
+        return OCHRE
+
+    def _draw_slot_card(self, rect, title, fill, selected, item) -> None:
+        border = LAMP if selected else (ASH if item else GRAPHITE)
+        pygame.draw.rect(self.screen, SOOT, rect)
+        pygame.draw.rect(self.screen, border, rect, 2 if selected else 1)
+        inner = rect.inflate(-8, -8)
+        title_h = 16
+        self._clip_label(
+            title,
+            inner.x,
+            inner.y,
+            LAMP if selected else ASH,
+            pygame.Rect(inner.x, inner.y, inner.width, title_h),
+        )
+        icon = pygame.Rect(0, 0, SLOT_ICON, SLOT_ICON)
+        icon.centerx = rect.centerx
+        icon.y = inner.y + title_h + 2
+        pygame.draw.rect(self.screen, VOID, icon)
+        pygame.draw.rect(self.screen, GRAPHITE, icon, 1)
+        prev = self.screen.get_clip()
+        self.screen.set_clip(icon)
+        if item:
+            oil = self._oil_surface(
+                oil_id_for_item(getattr(item, "id", "") or ""), SLOT_ICON, SLOT_ICON
+            )
+            if oil is not None:
+                self.screen.blit(oil, oil.get_rect(center=icon.center))
+            else:
+                swatch = icon.inflate(-8, -8)
+                pygame.draw.rect(self.screen, self._item_swatch(item), swatch)
+        self.screen.set_clip(prev)
+        name = fill or "пусто"
+        name_box = pygame.Rect(inner.x, icon.bottom + 2, inner.width, inner.bottom - icon.bottom - 2)
+        if name_box.height > 0:
+            name_surf = self.tiny.render(name, True, LINEN if item else SLATE)
+            nx = inner.x + max(0, (inner.width - name_surf.get_width()) // 2)
+            self._clip_label(name, nx, name_box.y, LINEN if item else SLATE, name_box)
+
     def _draw_class_select(self, engine):
         self._text("Петербург. Клиника. Бред.", 40, 40, PAPER)
         self._text("Вид 2D. Сверху, клетка, не analog.", 40, 68, SLATE)
@@ -700,35 +1189,37 @@ class View2D:
                 _face_toward(ex, ey, px, py),
                 getattr(enemy, "id", "") or "",
             )
-        if getattr(engine, "use_sprites", True) and player:
-            oil = self._oil_surface(who_p, FIGHT_FACE_W, FIGHT_FACE_H)
-            if oil is not None:
-                self.screen.blit(oil, (8, 16))
-        if getattr(engine, "use_sprites", True) and enemy:
-            oil = self._oil_surface(getattr(enemy, "id", "") or "", FIGHT_FACE_W, FIGHT_FACE_H)
-            if oil is not None:
-                self.screen.blit(oil, (WIN_W - FIGHT_FACE_W - 8, 16))
+        if player:
+            if getattr(engine, "use_sprites", True):
+                oil = self._oil_surface(who_p, FIGHT_FACE_W, FIGHT_FACE_H)
+                if oil is not None:
+                    self.screen.blit(oil, (8, 16))
+            self._draw_meters(player, 8 + FIGHT_FACE_W + 12, 16)
+        if enemy:
+            if getattr(engine, "use_sprites", True):
+                oil = self._oil_surface(getattr(enemy, "id", "") or "", FIGHT_FACE_W, FIGHT_FACE_H)
+                if oil is not None:
+                    self.screen.blit(oil, (WIN_W - FIGHT_FACE_W - 8, 16))
+            name = getattr(enemy, "name", "тень")
+            hp = int(getattr(enemy, "hp", 0) or 0)
+            mx = max(1, int(getattr(enemy, "max_hp", 1) or 1))
+            self._draw_meter(
+                WIN_W - FIGHT_FACE_W - 196,
+                16,
+                176,
+                16,
+                hp / mx,
+                RUST,
+                f"{name} {hp}/{mx}",
+            )
         pygame.draw.rect(self.screen, SOOT, (0, MAP_H, WIN_W, HUD_H))
         pygame.draw.line(self.screen, SLATE, (0, MAP_H), (WIN_W, MAP_H))
         hint_y = WIN_H - HINT_H
         pygame.draw.line(self.screen, SLATE, (0, hint_y), (WIN_W, hint_y))
-        y = MAP_H + 8
+        y = MAP_H + 4
         y = self._text("СРЫВ", 12, y, BLOOD, stop=hint_y)
-        if player:
-            y = self._text(
-                f"вы {player.hp}/{player.max_hp}  воля {player.san}",
-                12,
-                y,
-                RUST,
-                stop=hint_y,
-            )
-        if enemy:
-            name = getattr(enemy, "name", "тень")
-            hp = getattr(enemy, "hp", "?")
-            mx = getattr(enemy, "max_hp", hp)
-            y = self._text(f"{name}  {hp}/{mx}", 12, y, ASH, stop=hint_y)
-        for msg in list(getattr(engine, "messages", None) or [])[-3:]:
-            y = self._text(msg, 12, y, PAPER, width=70, stop=hint_y - 4)
+        for msg in list(getattr(engine, "messages", None) or [])[-1:]:
+            y = self._text(msg, 12, y, PAPER, width=78, stop=hint_y)
         self._text("1 удар · 2 умение · 3 бежать", 12, hint_y + 4, SLATE, stop=WIN_H)
 
     def _blit_chibi(self, x, y, kind, look, armed, face, who):
@@ -744,20 +1235,36 @@ class View2D:
         flame_g = np.zeros((rows, cols), dtype=np.float32)
         moon_g = np.zeros((rows, cols), dtype=np.float32)
         flames = []
+
+        def _pool(grid, cx, cy, radius, amount):
+            if radius <= 0:
+                return
+            height = 1.0
+            for iy in range(rows):
+                for ix in range(cols):
+                    dist = math.hypot(ix - cx, iy - cy)
+                    if dist > radius:
+                        continue
+                    d2 = dist * dist + height * height
+                    edge = max(0.0, 1.0 - (dist / radius) ** 2)
+                    grid[iy, ix] += amount * height / (d2 ** 1.5) * edge
+
         for y, row in enumerate(tiles):
             for x, char in enumerate(row):
                 if char == "*":
-                    flames.append((x, y, 5, 1.0))
-                    for iy in range(rows):
-                        for ix in range(cols):
-                            add = max(0.0, 1.0 - math.hypot(ix - x, iy - y) / 5.0)
-                            flame_g[iy, ix] += add
-                            illum[iy, ix] += add * 0.35
+                    flames.append((x, y, 2, 1.0))
+                    _pool(flame_g, x, y, 2.2, 1.0)
+                    _pool(illum, x, y, 2.2, 0.35)
+                elif char in "BTOC":
+                    flames.append((x, y, 2, 0.4))
+                    _pool(flame_g, x, y, 1.8, 0.45)
+                    _pool(illum, x, y, 1.8, 0.18)
+                elif char == "." and (x * 13 + y * 29) % 14 == 0:
+                    flames.append((x, y, 1, 0.28))
+                    _pool(flame_g, x, y, 1.2, 0.35)
+                    _pool(illum, x, y, 1.2, 0.12)
                 if char == "W":
-                    for iy in range(rows):
-                        for ix in range(cols):
-                            add = max(0.0, 1.0 - math.hypot(ix - x, iy - y) / 4.0)
-                            moon_g[iy, ix] += add
+                    _pool(moon_g, x, y, 2.4, 1.0)
         lw, lh = cols * LIGHT_RES, rows * LIGHT_RES
         buf = np.zeros((lh, lw, 3), dtype=np.uint8)
         for ly in range(lh):

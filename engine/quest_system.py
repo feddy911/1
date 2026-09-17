@@ -39,6 +39,17 @@ def debt_face(flags: Optional[Set[str]] = None) -> str:
     return " и ".join(names)
 
 
+def fog_veil(flags: Optional[Set[str]] = None) -> float:
+    """Густота ваты на улице. 1 — без правды. Имя или долг — реже. Оба — тонкая."""
+    name = has_name(flags)
+    debt = has_debt(flags)
+    if name and debt:
+        return 0.2
+    if name or debt:
+        return 0.55
+    return 1.0
+
+
 def can_pass_fog(flags: Optional[Set[str]] = None) -> bool:
     return has_name(flags) and has_debt(flags)
 

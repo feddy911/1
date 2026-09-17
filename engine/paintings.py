@@ -22,6 +22,7 @@ LOCATION_FILES: Dict[str, str] = {
     "street_outside": "street.png",
     "street_traktir": "traktir.png",
     "street_tenement": "tenement.png",
+    "street_canal_east": "street.png",
     BRED_MAP_ID: "bred.png",
 }
 

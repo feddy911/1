@@ -312,7 +312,7 @@ def main():
     host._toggle_equip(knife)
     if host.player.equipped_weapon_id or host.player.damage_die != UNARMED_DAMAGE_DIE:
         errors.append("нож не уходит в карман")
-    from engine.equipment import EQUIP_SLOTS, SLOT_INDEX
+    from engine.equipment import EQUIP_SLOTS, SLOT_INDEX, slot_fill_name
 
     slot_ids = [slot_id for slot_id, _name in EQUIP_SLOTS]
     for needed in ("head", "body", "main_hand", "off_hand", "legs", "feet"):
@@ -382,6 +382,10 @@ def main():
         errors.append("без игрока вид не казённый")
     host.player.inventory = [robe, coat]
     host.player.equipped = {"body": "item_robe"}
+    if slot_fill_name(host.player, "body") == "item_robe":
+        errors.append("кукла пишет id халата")
+    if "халат" not in (slot_fill_name(host.player, "body") or "").lower():
+        errors.append("кукла не называет халат")
     if worn_look(host.player) != "clinic":
         errors.append("халат не даёт казённый вид")
     host.player.equipped = {"body": "item_coat"}
@@ -953,6 +957,12 @@ def main():
     window = db.get_light_source("window")
     if not window or window["symbol"] != "W" or float(window["radius"]) < 1:
         errors.append(f"окно-свет сломано: {window}")
+    if float((window or {}).get("radius") or 99) > 3:
+        errors.append("окно снова широким пятном")
+    for source_id, cap in (("lamp", 3), ("gas_lamp", 3), ("torch", 3), ("candle", 2)):
+        row = db.get_light_source(source_id) or {}
+        if float(row.get("radius") or 99) > cap:
+            errors.append(f"{source_id} снова широким пятном")
 
     pante = db.get_dialogue("dialogue_panteleimon_intro")
     if not pante or not pante.get("lines"):
@@ -1131,9 +1141,37 @@ def main():
     if any(cell in {"S", "s"} for row in tenement for cell in row):
         errors.append("доходный дом: лестница стала переходом")
     if street[9][58] != "E" or street[10][58] != "E":
-        errors.append("туман не ведёт в дом")
+        errors.append("туман не ведёт вдоль канала")
     if street[9][57] not in WALKABLE_TILES:
-        errors.append("из дома некуда выйти в туман")
+        errors.append("из канала некуда выйти к клинике")
+    canal_east = load_map(ROOT / "data" / "maps" / "canal_east.txt")
+    if canal_east[9][0] != "E" or canal_east[10][0] != "E":
+        errors.append("набережная: нет хода к клинике")
+    if canal_east[6][12] != "E" or canal_east[6][13] != "E":
+        errors.append("набережная: нет ворот в дом")
+    if canal_east[7][12] not in WALKABLE_TILES or canal_east[7][13] not in WALKABLE_TILES:
+        errors.append("набережная: к воротам не пройти")
+    from engine.tiles2d import is_house_gate
+
+    if not is_house_gate(canal_east, 12, 6) or not is_house_gate(canal_east, 13, 6):
+        errors.append("ворота дома не в стене")
+    if is_house_gate(street, 58, 9) or is_house_gate(street, 0, 9):
+        errors.append("край улицы стал воротами")
+    if canal_east[9][59] == "E" or canal_east[10][59] == "E":
+        errors.append("набережная: восток уже переход")
+    if db.get_connection_at_position("street_canal_east", 59, 9) is not None:
+        errors.append("восток канала уже куда-то ведёт")
+    if canal_east[16][8] != "=":
+        errors.append("набережная без канала")
+    assert_map_walkable(errors, "canal_east", canal_east, (1, 9), 60)
+    if db.get_connection_at_position("street_outside", 58, 9) is None:
+        errors.append("нет связи улица → канал")
+    else:
+        fog_link = db.get_connection_at_position("street_outside", 58, 9)
+        if (fog_link or {}).get("target_map_id") != "street_canal_east":
+            errors.append("туман снова кидает в дом")
+    if db.get_connection_at_position("street_canal_east", 12, 6) is None:
+        errors.append("нет двора с набережной в дом")
     assert_map_walkable(errors, "tenement", tenement, (1, 6), 48)
     from engine.constants import SEARCHABLE_TILES
     from engine.db_migrate import CONTAINER_LOOT
@@ -1174,6 +1212,7 @@ def main():
         "street_outside": street,
         "street_traktir": traktir,
         "street_tenement": tenement,
+        "street_canal_east": canal_east,
     }
     for map_id, expect_w, expect_h in (
         ("hospital_floor_1", 57, 12),
@@ -1183,6 +1222,7 @@ def main():
         ("street_traktir", 36, 14),
         ("hospital_bred", 57, 12),
         ("street_tenement", 48, 14),
+        ("street_canal_east", 60, 20),
     ):
         meta = db.get_map(map_id)
         if not meta or meta["width"] != expect_w or meta["height"] != expect_h:
@@ -1506,12 +1546,14 @@ def main():
     if "уже слышал" not in hud_ok:
         errors.append(f"HUD с обеими правдами: {hud_ok}")
 
-    from engine.quest_system import can_pass_fog, debt_face, has_debt, has_name
+    from engine.quest_system import can_pass_fog, debt_face, fog_veil, has_debt, has_name
 
     if can_pass_fog({"archive_name"}) or can_pass_fog({"guilt_admitted"}):
         errors.append("один флаг правды открывает туман")
     if not can_pass_fog({"archive_name", "guilt_admitted"}):
         errors.append("имя и долг вместе не открывают туман")
+    if not (fog_veil(set()) > fog_veil({"archive_name"}) > fog_veil({"archive_name", "guilt_admitted"})):
+        errors.append("туман не редеет с правдой")
     if has_name({"sennaya_name"}):
         errors.append("нищий снова считается именем без архива")
     if not has_name({"archive_name"}) or not has_debt({"nastasya_escape"}):
@@ -2342,8 +2384,13 @@ def main():
         errors.append(f"имя и долг дали титры в тумане: {engine.ending_id}")
     engine.player.x, engine.player.y = 57, 9
     engine._try_transition(58, 9)
-    if engine.current_map_id != "street_tenement":
-        errors.append("имя и долг не открывают дом")
+    if engine.current_map_id != "street_canal_east":
+        errors.append("имя и долг не открывают канал")
+    else:
+        engine.player.x, engine.player.y = 12, 7
+        engine._try_transition(12, 6)
+        if engine.current_map_id != "street_tenement":
+            errors.append("с канала нет хода в дом")
     engine._load_map("street_outside")
     engine.player.x, engine.player.y = 57, 9
     engine.ending_id = None
@@ -2640,7 +2687,45 @@ def main():
     if fov_w.get_flame_illumination(2, 7) > 0.01:
         errors.append("окно мерцает как лампа")
 
+    fov_e = FOVSystem(15, 15)
+    fov_e.initialize(grid)
+    fov_e.compute_fov(
+        7,
+        7,
+        grid,
+        [{"x": 4, "y": 7, "radius": 2, "intensity": 0.38, "symbol": "", "type": "ember"}],
+    )
+    if fov_e.get_flame_illumination(4, 7) <= 0.01:
+        errors.append("точечный свет не греет")
+    if fov_e.get_window_illumination(4, 7) > 0.01:
+        errors.append("точечный свет как луна")
+    if fov_e.get_flame_illumination(4, 7) <= fov_e.get_flame_illumination(7, 7):
+        errors.append("точечный свет не точка")
+
+    fov_l = FOVSystem(21, 21)
+    open_floor = [["."] * 21 for _ in range(21)]
+    fov_l.initialize(open_floor)
+    fov_l.compute_fov(
+        10,
+        10,
+        open_floor,
+        [{"x": 10, "y": 10, "radius": 5, "intensity": 1.0, "symbol": "*"}],
+    )
+    east_l = fov_l.get_flame_illumination(13, 10)
+    north_l = fov_l.get_flame_illumination(10, 13)
+    if abs(east_l - north_l) > 0.02:
+        errors.append(f"лампа снова лучами: восток {east_l:.3f}, север {north_l:.3f}")
+    if east_l <= 0.01:
+        errors.append("фонарь не даёт круга")
+
     engine._load_map("hospital_floor_1")
+    sparks = [item for item in (engine.light_sources or []) if item.get("type") == "ember"]
+    if not sparks:
+        errors.append("нет точечного света")
+    if any((item.get("symbol") or "") in ("*", "W") for item in sparks):
+        errors.append("точечный свет снова лампа")
+    if any(int(item.get("radius") or 9) > 2 for item in sparks):
+        errors.append("точечный свет не точка")
     engine.current_map[3][52] = "D"
     engine._try_open_door(52, 3, "D")
     if engine.current_map[3][52] != "'":
@@ -2678,6 +2763,7 @@ def main():
         "street_outside": "street_canal",
         "street_traktir": "traktir",
         "street_tenement": "street_canal",
+        "street_canal_east": "street_canal",
         BRED_MAP_ID: "bred",
     }
     if MAP_TRACKS != expected_tracks:
@@ -3021,15 +3107,28 @@ def main():
 
     from engine.tiles2d import (
         CELL,
+        FACADE_TALL,
         SCALE,
         TILE2D,
         VOID_RGB,
         apply_light,
+        facade_interior,
+        facade_peek_y,
+        is_behind_house,
+        is_passage,
+        is_south_facade,
         light_tint,
         paint_cell,
+        paint_facade,
+        paint_floor,
+        paint_gate,
         paint_person,
+        paint_wall,
+        INK,
+        _window_lit,
+        transition_dir,
     )
-    from engine.view2d import colorize_mask
+    from engine.view2d import colorize_mask, HUD_H, HINT_H, LINE_H, edge_fog
 
     main_src = (ROOT / "main.py").read_text(encoding="utf-8")
     if 'dest="view2d"' not in main_src or "View2D" not in main_src:
@@ -3059,11 +3158,139 @@ def main():
         errors.append("пол и стена в 2D красятся одинаково")
     if int(table_rgb.sum()) == int(floor_rgb.sum()):
         errors.append("стол в 2D не стоит на полу")
+    street_a = paint_floor(0, 0, "street")
+    street_b = paint_floor(1, 0, "street")
+    if int(street_a.sum()) == int(floor_rgb.sum()):
+        errors.append("улица как палата")
+    soot = INK["soot"]
+    if (street_a[:, 0] == soot).all() and (street_b[:, 0] == soot).all():
+        errors.append("мостовая шахматой")
+    if "x % 7" in tile2d_src:
+        errors.append("мостовая снова клетка на клетке")
+    if "gy // 8" not in tile2d_src:
+        errors.append("брусчатка снова мелкая")
+    if "def paint_fog_gate" not in tile2d_src:
+        errors.append("выход в тумане снова лёд")
+    street_e = paint_cell("E", 0, 58, 9, "street", 1.0)
+    street_floor = paint_floor(58, 9, "street")
+    clinic_e = paint_cell("E", 0, 54, 1, "clinic", 0.0)
+    if int(street_e.sum()) != int(street_floor.sum()):
+        errors.append("выход в вате снова ящик")
+    arch = paint_gate(13, 4)
+    if int(arch.sum()) == int(street_floor.sum()):
+        errors.append("ворота как мостовая")
+    if int(clinic_e.sum()) == int(street_e.sum()):
+        errors.append("выход клиники как мостовая")
+    if "_street_mist" not in view_src or "res = 8" not in view_src:
+        errors.append("улица без петербургской дымки")
+    street_grid = load_map(ROOT / "data" / "maps" / "street.txt")
+    canal_grid = load_map(ROOT / "data" / "maps" / "canal_east.txt")
+    if not is_south_facade(street_grid, 8, 6):
+        errors.append("дом на улице без фасада")
+    if not is_behind_house(street_grid, 8, 3):
+        errors.append("комната за фасадом снова видна")
+    if is_behind_house(street_grid, 8, 10):
+        errors.append("мостовая спряталась за дом")
+    if not is_passage(street_grid, 12, 6) or not is_passage(street_grid, 13, 6):
+        errors.append("проход в доме как мостовая")
+    if is_passage(street_grid, 58, 9):
+        errors.append("край тумана стал воротами")
+    if not is_passage(canal_grid, 12, 6) or not is_passage(canal_grid, 13, 6):
+        errors.append("подворотня канала без арки")
+    if transition_dir(street_grid, 58, 9, "E") != (1, 0):
+        errors.append("переход на восток без стрелки")
+    if transition_dir(canal_grid, 12, 6, "E") != (0, -1):
+        errors.append("ворота в дом без стрелки")
+    if "_draw_transition_marks" not in view_src:
+        errors.append("переход без знака на карте")
+    if facade_peek_y(6, FACADE_TALL - 1) != 5:
+        errors.append("нижнее окно не смотрит в комнату")
+    room_y, room_ch = facade_interior(street_grid, 7, 6, FACADE_TALL - 1)
+    if room_y is None or room_ch in {"#", "W", '"'}:
+        errors.append("за окном нет комнаты")
+    if "facade_cutaway" in view_src:
+        errors.append("улица режет дом квадратом")
+    if "facade_interior" not in view_src or "open_stories" not in view_src:
+        errors.append("окно без интерьера")
+    gate_open = paint_gate(12, 6)
+    void_ink = tuple(int(c) for c in VOID_RGB)
+    if not (gate_open == VOID_RGB).all(axis=2).any():
+        errors.append("арка подворотни глухая")
+    closed = paint_facade(8, 6, True, 0)
+    opened = paint_facade(8, 6, True, 1 << (FACADE_TALL - 1))
+    void_ink = tuple(int(c) for c in VOID_RGB)
+    pane_y0 = (FACADE_TALL - 1) * TILE2D + 9
+    pane_y1 = (FACADE_TALL - 1) * TILE2D + 20
+
+    def _pane_void(img) -> int:
+        n = 0
+        for y in range(pane_y0, pane_y1):
+            for x in range(11, 21):
+                if tuple(int(v) for v in img[y, x]) == void_ink:
+                    n += 1
+        return n
+
+    if _pane_void(opened) < 40:
+        errors.append("стекло не открывает комнату")
+    if _pane_void(closed) > 0:
+        errors.append("глухое окно дырявое")
+    if "_window_lit" not in tile2d_src:
+        errors.append("окна домов без огня")
+    house = paint_facade(8, 6, True)
+    brick = paint_wall(0)
+    lamp = tuple(int(c) for c in INK["lamp"])
+    frost = tuple(int(c) for c in INK["frost"])
+    canal_ink = tuple(int(c) for c in INK["canal"])
+    lit_px = 0
+    dark_px = 0
+    for y in range(house.shape[0]):
+        for x in range(house.shape[1]):
+            pix = tuple(int(v) for v in house[y, x])
+            if pix in (lamp, frost):
+                lit_px += 1
+            if pix == canal_ink:
+                dark_px += 1
+    if lit_px < 8:
+        errors.append("окна фасада без света")
+    if dark_px < 8:
+        errors.append("все окна фасада горят")
+    if not _window_lit(8, 6, FACADE_TALL - 1, True):
+        errors.append("окно на мостовой не светит")
+    if house.shape != (TILE2D * FACADE_TALL, TILE2D, 3):
+        errors.append("фасад не растёт ввысь")
+    if float(house[:, :, 0].mean()) <= float(brick[:, :, 0].mean()):
+        errors.append("фасад не охра Петербурга")
+    if "paint_facade" not in view_src or "is_behind_house" not in view_src:
+        errors.append("улица снова видит комнаты за стеной")
+    if edge_fog(58, 60, 1.0) < 0.85:
+        errors.append("край карты без ваты")
+    if edge_fog(58, 60, 0.2) > 0.42:
+        errors.append("вата не редеет после правды")
+    if edge_fog(10, 60, 1.0) >= edge_fog(58, 60, 1.0) * 0.55:
+        errors.append("вата не к краю")
     if "_iso_box" not in tile2d_src or "_iso_shadow" not in tile2d_src:
         errors.append("мебель 2D снова плоская")
     cabinet = paint_cell("H", 0, 1, 1)
     if float(cabinet[26].mean()) >= float(cabinet[10].mean()):
         errors.append("шкаф без южной грани")
+    floor_at = paint_floor(2, 2)
+
+    def _cover(char: str) -> int:
+        cell = paint_cell(char, 0, 2, 2)
+        return int((cell != floor_at).any(axis=2).sum())
+
+    if _cover("B") < 520:
+        errors.append("кровать не наполняет клетку")
+    if _cover("T") < 420:
+        errors.append("стол мелкий для комнаты")
+    if _cover("C") < 380:
+        errors.append("стул снова щепка")
+    if _cover("H") < 560:
+        errors.append("шкаф не к стене")
+    if _cover("O") < 480:
+        errors.append("письменный стол мелкий")
+    if _cover("C") >= _cover("T"):
+        errors.append("стул не меньше стола")
     if "2 умение" not in view_src or "2 умение" not in (
         ROOT / "engine" / "renderer.py"
     ).read_text(encoding="utf-8"):
@@ -3092,6 +3319,8 @@ def main():
         errors.append("взгляд 2D снова зубцами")
     if "_soft_mask" not in view_src:
         errors.append("обзор 2D не сглажен")
+    if "(x, y, 5, 1.0)" in view_src:
+        errors.append("схватка 2D с широкой лампой")
     from engine.clinic_tiles import paint_proto_tile as paint_tcod
     tcod_floor = colorize_mask(paint_tcod("."), (200, 200, 200), (10, 10, 10))
     if tcod_floor.shape != (24, 16, 3):
@@ -3106,6 +3335,38 @@ def main():
         errors.append("тетрадь 2D не дерево")
     if 'list(getattr(engine.player, "talents"' in view_src:
         errors.append("тетрадь 2D снова показывает id")
+    if "def _draw_character" not in view_src or "slot_fill_name" not in view_src:
+        errors.append("окно на себе 2D не кукла")
+    if "EQUIP_SLOTS" not in view_src:
+        errors.append("окно на себе 2D без девяти слотов")
+    if "_draw_slot_card" not in view_src or "doll_slot_rects" not in view_src:
+        errors.append("окно на себе 2D снова список без фигуры")
+    if "set_clip" not in view_src:
+        errors.append("карточки слотов без обрезки")
+    from engine.view2d import doll_slot_rects
+    _core = __import__("pygame").Rect(300, 160, 128, 128)
+    _slots = list(doll_slot_rects(_core).values())
+    for i, a in enumerate(_slots):
+        for b in _slots[i + 1 :]:
+            if a.colliderect(b):
+                errors.append("слоты куклы наезжают друг на друга")
+                break
+    if "paint_person" not in view_src:
+        errors.append("кукла 2D без фигуры")
+    if 'held or \'пусто\'"' in view_src or "equipped\", None) or {}).items()" in view_src:
+        errors.append("окно на себе 2D снова показывает id")
+    if 'slot_name} — {fill}' in view_src:
+        errors.append("кукла 2D снова одна колонка текста")
+    if HUD_H > 80:
+        errors.append("HUD 2D снова простыня под картой")
+    if HUD_H - HINT_H < LINE_H * 2 + 8:
+        errors.append("дело обрезает цель")
+    if "_wrap_px(quest" not in view_src:
+        errors.append("цель в деле без переноса")
+    if "_draw_meter" not in view_src:
+        errors.append("HUD 2D без полос плоти и воли")
+    if "ground" not in (ROOT / "engine" / "tiles2d.py").read_text(encoding="utf-8"):
+        errors.append("пол 2D одного камня на всю ночь")
     if "HINT_H" not in view_src or "log_stop" not in view_src:
         errors.append("HUD 2D снова наезжает на подсказку")
     from engine.view2d import FACE_H, FACE_W, _fit_wh
