@@ -89,6 +89,7 @@ def dump_engine(engine) -> dict:
         "notified_quests": list(getattr(engine, "notified_quests", []) or []),
         "fired_triggers": sorted(getattr(engine, "fired_triggers", set()) or []),
         "found_notes": list(quest.found_notes) if quest else [],
+        "party": list(getattr(engine, "party_ids", None) or []),
         "map_states": map_states,
         "use_sprites": bool(getattr(engine, "use_sprites", True)),
     }

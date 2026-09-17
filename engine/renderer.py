@@ -572,7 +572,7 @@ class Renderer:
             y += 1
 
         if in_fight:
-            hint = "1 удар · 2 глагол · 3 бежать"
+            hint = "1 удар · 2 умение · 3 бежать"
         else:
             hand = "кулак"
             eq = getattr(player, "equipped_weapon_id", None)
@@ -865,7 +865,7 @@ class Renderer:
 
         verb = "—"
         if player and getattr(player, "class_ability", None):
-            verb = (player.class_ability.get("name") or "Глагол")[:28]
+            verb = (player.class_ability.get("name") or "Умение")[:28]
         ranks = (
             "1  Удар · d20",
             f"2  {verb}",

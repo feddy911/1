@@ -7,9 +7,12 @@ ASCII-ролевая игра на Python и tcod. Психиатрическа�
 ```
 pip install -r requirements.txt
 python main.py
+python main.py --2d
 ```
 
-Нужны Python 3.10+, окно tcod, база `data/petersburg.db` и шрифт `assets/fonts/DejaVuSansMono.ttf` (кириллица, ≈, рамки). Если файла нет, на Windows берётся Consolas.
+Нужны Python 3.10+, окно tcod или pygame (`--2d`), база `data/petersburg.db` и шрифт `assets/fonts/DejaVuSansMono.ttf` (кириллица, ≈, рамки). Если файла нет, на Windows берётся Consolas.
+
+`--2d` — та же ночь сверху, сетка `.txt`. Мышь карту не водит. tcod — `python main.py`.
 
 Тихие клики — бумага, дверь, финал. Петля карты — `data/music`. Шаги молчат.
 

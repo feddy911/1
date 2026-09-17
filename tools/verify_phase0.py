@@ -3019,6 +3019,135 @@ def main():
         errors.append("клики не WAV")
     clinic_sound.play("paper")
 
+    from engine.tiles2d import (
+        CELL,
+        SCALE,
+        TILE2D,
+        VOID_RGB,
+        apply_light,
+        light_tint,
+        paint_cell,
+        paint_person,
+    )
+    from engine.view2d import colorize_mask
+
+    main_src = (ROOT / "main.py").read_text(encoding="utf-8")
+    if 'dest="view2d"' not in main_src or "View2D" not in main_src:
+        errors.append("main.py не открывает вид 2D")
+    view_src = (ROOT / "engine" / "view2d.py").read_text(encoding="utf-8")
+    tile2d_src = (ROOT / "engine" / "tiles2d.py").read_text(encoding="utf-8")
+    if "pygame.mouse" in view_src:
+        errors.append("вид 2D читает мышь")
+    if "не analog" not in view_src:
+        errors.append("вид 2D потерял запрет analog")
+    if TILE2D != 32 or SCALE != 2 or CELL != 64:
+        errors.append(f"клетка 2D не 32×2: {TILE2D}×{SCALE}")
+    if "BLEND_RGB_MULT" not in view_src or "light_tint" not in view_src:
+        errors.append("вид 2D без градиента света")
+    if "LIGHT_RES" not in view_src or "smoothscale" not in view_src:
+        errors.append("свет 2D снова ступеньками по клетке")
+    if "flame_flicker" not in view_src:
+        errors.append("вид 2D без мерцания лампы")
+    if "minimap" in tile2d_src.lower():
+        errors.append("вид 2D взял чужой UI Streets of Rogue")
+    floor_rgb = paint_cell(".", 0, 0, 0)
+    wall_rgb = paint_cell("#", 15, 0, 0)
+    table_rgb = paint_cell("T", 0, 2, 2)
+    if floor_rgb.shape != (32, 32, 3) or wall_rgb.shape != (32, 32, 3):
+        errors.append(f"спрайт 2D не 32×32: {floor_rgb.shape}")
+    if int(floor_rgb.sum()) == int(wall_rgb.sum()):
+        errors.append("пол и стена в 2D красятся одинаково")
+    if int(table_rgb.sum()) == int(floor_rgb.sum()):
+        errors.append("стол в 2D не стоит на полу")
+    if "_iso_box" not in tile2d_src or "_iso_shadow" not in tile2d_src:
+        errors.append("мебель 2D снова плоская")
+    cabinet = paint_cell("H", 0, 1, 1)
+    if float(cabinet[26].mean()) >= float(cabinet[10].mean()):
+        errors.append("шкаф без южной грани")
+    if "2 умение" not in view_src or "2 умение" not in (
+        ROOT / "engine" / "renderer.py"
+    ).read_text(encoding="utf-8"):
+        errors.append("умение снова назвали глаголом")
+    if "2 глагол" in view_src:
+        errors.append("подсказка схватки снова говорит глагол")
+    lit = apply_light(floor_rgb, 1.2, 0.9, 0.0, True, 1.0)
+    dark = apply_light(floor_rgb, 0.15, 0.0, 0.0, True, 1.0)
+    if float(lit.mean()) <= float(dark.mean()):
+        errors.append("лампа не освещает клетку")
+    body = paint_person("player", "clinic", True, (1, 0))
+    filled = int((body != VOID_RGB).any(axis=2).sum())
+    if body.shape != (32, 32, 3) or filled < 90:
+        errors.append("нет спрайта человека")
+    warm = light_tint(1.1, 0.9, 0.0, True, 1.0)
+    cool = light_tint(1.1, 0.0, 0.8, True, 1.0)
+    dim = light_tint(0.2, 0.0, 0.0, True, 1.0)
+    if warm[0] <= cool[0] or cool[2] <= warm[2]:
+        errors.append("лампа и окно не делят тепло и холод")
+    if sum(warm) <= sum(dim):
+        errors.append("ровный свет не ярче тёмного угла")
+    mid_sight = light_tint(1.0, 0.0, 0.0, 0.5, 1.0)
+    full_sight = light_tint(1.0, 0.0, 0.0, 1.0, 1.0)
+    no_sight = light_tint(1.0, 0.0, 0.0, 0.0, 1.0)
+    if not (sum(no_sight) < sum(mid_sight) < sum(full_sight)):
+        errors.append("взгляд 2D снова зубцами")
+    if "_soft_mask" not in view_src:
+        errors.append("обзор 2D не сглажен")
+    from engine.clinic_tiles import paint_proto_tile as paint_tcod
+    tcod_floor = colorize_mask(paint_tcod("."), (200, 200, 200), (10, 10, 10))
+    if tcod_floor.shape != (24, 16, 3):
+        errors.append(f"tcod клетка сломалась: {tcod_floor.shape}")
+    if "view=None" not in (ROOT / "engine" / "game_engine.py").read_text(encoding="utf-8"):
+        errors.append("движок не принимает вид 2D")
+    if "def _raw_events" not in (ROOT / "engine" / "game_engine.py").read_text(
+        encoding="utf-8"
+    ):
+        errors.append("движок не читает ввод 2D")
+    if "def _draw_talents" not in view_src or "visible_talents" not in view_src:
+        errors.append("тетрадь 2D не дерево")
+    if 'list(getattr(engine.player, "talents"' in view_src:
+        errors.append("тетрадь 2D снова показывает id")
+    if "HINT_H" not in view_src or "log_stop" not in view_src:
+        errors.append("HUD 2D снова наезжает на подсказку")
+    from engine.view2d import FACE_H, FACE_W, _fit_wh
+    if _fit_wh(864, 1152, FACE_W, FACE_H) != (FACE_W, FACE_H):
+        errors.append("масло 3:4 сплющили")
+    wide_w, wide_h = _fit_wh(200, 100, FACE_W, FACE_H)
+    if wide_h == FACE_H or abs(wide_w / wide_h - 2.0) > 0.05:
+        errors.append("масло снова тянут в клетку")
+    if "WIN_W - 48, 360" in view_src or "_oil_surface(portrait, 96, 128)" in view_src:
+        errors.append("диалог 2D снова пустая простыня")
+    if FACE_W / FACE_H != 0.75:
+        errors.append(f"окно лица не 3:4: {FACE_W}×{FACE_H}")
+    if "LAMP if tagged" not in view_src:
+        errors.append("диалог 2D без золота подсказок")
+    if "FIGHT_FACE_W" not in view_src or "load_stage" not in view_src:
+        errors.append("схватка 2D без лиц или сцены")
+    petrov = paint_person("npc", "clinic", False, (0, 1), "watchman_petrov")
+    nastya = paint_person("npc", "clinic", False, (0, 1), "patient_nastasya")
+    if int(petrov.sum()) == int(nastya.sum()):
+        errors.append("фигурки 2D все на одно лицо")
+    from engine.battle_stage import BATTLE_DIR, load_stage, pick_kind
+    from engine.party import PARTY_MAX, join_party, parse_party
+    if pick_kind("basement") != "cellar" or pick_kind("floor_1") != "ward":
+        errors.append("схватка не выбирает карту по месту")
+    tiles, spots = load_stage("ward")
+    if "@" not in spots or "&" not in spots:
+        errors.append("сцена схватки без мест")
+    if any(char in "@&12" for row in tiles for char in row):
+        errors.append("маркеры схватки остались на полу")
+    for name in ("ward", "corridor", "cellar", "hall", "yard"):
+        if not (BATTLE_DIR / f"{name}.txt").is_file():
+            errors.append(f"нет карты схватки {name}")
+    if PARTY_MAX != 3:
+        errors.append("в ряду не трое")
+    if parse_party({"party": ["rebel", "sanitary_panteleimon"]}, "rebel")[0] != "rebel":
+        errors.append("ряд не держит игрока первым")
+    class _Host:
+        party_ids = ["rebel"]
+        player = type("P", (), {"id": "rebel"})()
+    if join_party(_Host(), "rebel"):
+        errors.append("в ряд дважды встаёт один и тот же")
+
     db.close()
     if errors:
         print("FAIL")

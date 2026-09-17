@@ -111,9 +111,10 @@ class GameState:
 class GameEngine:
     """Главный движок игры."""
 
-    def __init__(self, context, tileset=None):
+    def __init__(self, context, tileset=None, view=None):
         self.context = context
         self.clinic_tileset = tileset
+        self.view = view
         self.db = DBLoader()
         self.entity_factory = EntityFactory(self.db)
         self.trigger_system = TriggerSystem(self.db)
@@ -142,6 +143,8 @@ class GameEngine:
 
         self.fov_system = None
         self.current_enemy = None
+        self.battle_kind = ""
+        self.party_ids: List[str] = []
         self.san_system = None
         self.quest_system = None
         self.notified_quests = []
@@ -240,6 +243,8 @@ class GameEngine:
         self.player = Player(class_data)
         self.map_states = {}
         self.flags = {f'class_{class_id}'}
+        self.party_ids = [class_id]
+        self.battle_kind = ""
         self.standing = {}
         self.visited_regions = set()
         self.visited_maps = set()
@@ -353,6 +358,9 @@ class GameEngine:
         self.fired_triggers = set(payload.get("fired_triggers") or [])
         self.ending_id = None
         self.current_enemy = None
+        self.battle_kind = ""
+        from engine.party import parse_party
+        self.party_ids = parse_party(payload, payload.get("class_id") or "")
         self.showing_help = False
         self.is_inventory_open = False
         self.is_talents_open = False
@@ -728,12 +736,31 @@ class GameEngine:
             self.oil_overlay = None
         return True
 
+    def _raw_events(self):
+        view = getattr(self, "view", None)
+        if view is not None:
+            return view.poll_events()
+        return tcod.event.get()
+
+    def _adapt_event(self, raw):
+        if isinstance(raw, tcod.event.Quit):
+            return "quit", raw
+        if isinstance(raw, tcod.event.KeyDown):
+            return "keydown", raw
+        if isinstance(raw, tcod.event.KeyUp):
+            return "keyup", raw
+        kind = getattr(raw, "kind", "") or ""
+        if kind in ("quit", "keydown", "keyup"):
+            return kind, raw
+        return "", raw
+
     def handle_events(self):
         """Обработка ввода. Не блокирует кадр."""
-        for event in tcod.event.get():
-            if isinstance(event, tcod.event.Quit):
+        for raw in self._raw_events():
+            kind, event = self._adapt_event(raw)
+            if kind == "quit":
                 return self.quit_and_save()
-            if isinstance(event, tcod.event.KeyDown):
+            if kind == "keydown":
                 if event.sym in MOVE_KEY_DIRS:
                     self._press_move_key(event.sym)
                 if (
@@ -744,7 +771,7 @@ class GameEngine:
                     continue
                 if not self._dispatch_key(event):
                     return False
-            elif isinstance(event, tcod.event.KeyUp):
+            elif kind == "keyup":
                 if event.sym in MOVE_KEY_DIRS:
                     self._release_move_key(event.sym)
 
@@ -1162,9 +1189,11 @@ class GameEngine:
 
     def _start_combat(self, entity: Character):
         self.current_enemy = entity
+        from engine.battle_stage import pick_kind
+        self.battle_kind = pick_kind(self.current_map_id or "")
         self.state = GameState.COMBAT
         self.add_message(f"Сцена: {entity.name}. Плоть {entity.hp} из {entity.max_hp}.")
-        self.add_message("1 — удар · 2 — глагол класса · 3 — бежать")
+        self.add_message("1 — удар · 2 — умение класса · 3 — бежать")
         if has_opening_crit(self.player):
             self.player.add_effect("next_crit", True, 1)
 
@@ -1237,11 +1266,11 @@ class GameEngine:
             tcod.event.KeySym.H, tcod.event.KeySym.J,
             tcod.event.KeySym.K, tcod.event.KeySym.L,
         ):
-            self.add_message("Вы в бою. 1 — удар, 2 — глагол, 3 — бежать.")
+            self.add_message("Вы в бою. 1 — удар, 2 — умение, 3 — бежать.")
         return True
 
     def _fight_rank_from_event(self, event) -> Optional[int]:
-        """Ряд сцены: 1 удар, 2 глагол, 3 бег. Пробел и C — те же ряды."""
+        """Ряд сцены: 1 удар, 2 умение, 3 бег. Пробел и C — те же ряды."""
         name = getattr(event.sym, "name", "") or ""
         idx = choice_index_from_key(name)
         if idx is not None and 0 <= idx <= 2:
@@ -1269,11 +1298,11 @@ class GameEngine:
         self._enemy_riposte()
 
     def _fight_verb(self):
-        """Классовый глагол в кадре. Не меню способности."""
+        """Классовое умение в кадре. Не меню способности."""
         if not self.player:
             return
         if not getattr(self.player, "class_ability", None):
-            self.add_message("У этого класса нет глагола.")
+            self.add_message("У этого класса нет умения.")
             return
         success, msg = self.player.use_class_ability(self.san_system)
         self.add_message(msg)
@@ -2095,6 +2124,10 @@ class GameEngine:
 
     def render(self):
         """Отрисовка кадра."""
+        view = getattr(self, "view", None)
+        if view is not None:
+            view.draw(self)
+            return
         self.renderer.clear()
 
         if self.state == GameState.CLASS_SELECTION:
