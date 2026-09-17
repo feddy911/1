@@ -32,6 +32,16 @@ from engine.db_loader import DBLoader
 from engine.dialogue_engine import DialogueEngine
 from engine.dialogue_keys import choice_index_from_key
 from engine.entity_factory import Character, EntityFactory, Player
+from engine.look_memory import parse_standing, remember
+from engine.shop import (
+    apply_buy,
+    apply_sell,
+    can_open_shop,
+    kopeck_phrase,
+    merchant_record,
+    refuse_shop,
+    sellable_items,
+)
 from engine.equipment import (
     EQUIP_SLOTS,
     SLOT_INDEX,
@@ -137,6 +147,7 @@ class GameEngine:
         self.notified_quests = []
         self.fired_triggers = set()
         self.flags = set()
+        self.standing = {}
         self.visited_regions = set()
         self.visited_maps = set()
         self.ending_id = None
@@ -147,9 +158,14 @@ class GameEngine:
         self.is_inventory_open = False
         self.is_talents_open = False
         self.is_character_open = False
+        self.is_shop_open = False
         self.inventory_selected_index = 0
         self.talent_selected_index = 0
         self.character_selected_index = 0
+        self.shop_selected_index = 0
+        self.shop_tab = "sell"
+        self.shop_merchant_id = ""
+        self.shop_merchant_name = ""
         self.oil_overlay = None
         self.use_sprites = True
         self._reset_realtime()
@@ -224,6 +240,7 @@ class GameEngine:
         self.player = Player(class_data)
         self.map_states = {}
         self.flags = {f'class_{class_id}'}
+        self.standing = {}
         self.visited_regions = set()
         self.visited_maps = set()
         self.ending_id = None
@@ -297,6 +314,10 @@ class GameEngine:
         self.player.hp = int(pdata.get("hp") or self.player.hp)
         self.player.max_san = int(pdata.get("max_san") or self.player.max_san)
         self.player.san = int(pdata.get("san") or self.player.san)
+        try:
+            self.player.kopecks = max(0, int(pdata.get("kopecks") or 0))
+        except (TypeError, ValueError):
+            self.player.kopecks = 0
         self.player.inventory = []
         for item_id in pdata.get("inventory") or []:
             item = self.entity_factory.create_item(item_id)
@@ -323,6 +344,7 @@ class GameEngine:
 
         self.flags = set(payload.get("flags") or [])
         self.flags.add(f'class_{self.player.id}')
+        self.standing = parse_standing(payload.get("standing"))
         self.visited_regions = set(payload.get("visited_regions") or [])
         self.visited_maps = set(payload.get("visited_maps") or [])
         self.bred_seed = payload.get("bred_seed") or 1
@@ -335,6 +357,7 @@ class GameEngine:
         self.is_inventory_open = False
         self.is_talents_open = False
         self.is_character_open = False
+        self.is_shop_open = False
         self.oil_overlay = None
         self.current_dialogue_choices = []
         self.current_map_id = None
@@ -774,7 +797,7 @@ class GameEngine:
             return True
         if self.showing_help or self.is_inventory_open or self.is_talents_open:
             return True
-        if self.is_character_open:
+        if self.is_character_open or self.is_shop_open:
             return True
         if self.oil_overlay:
             return True
@@ -848,6 +871,9 @@ class GameEngine:
         if self.is_character_open:
             return self._handle_character_input(event)
 
+        if self.is_shop_open:
+            return self._handle_shop_input(event)
+
         if event.sym in (tcod.event.KeySym.Q, tcod.event.KeySym.ESCAPE):
             return self.quit_and_save()
 
@@ -868,6 +894,8 @@ class GameEngine:
         elif event.sym == tcod.event.KeySym.C:
             self.is_character_open = True
             self.character_selected_index = SLOT_INDEX["body"]
+        elif event.sym == tcod.event.KeySym.B:
+            self._try_open_shop()
         elif event.sym in (
             tcod.event.KeySym.SLASH,
             tcod.event.KeySym.QUESTION,
@@ -930,6 +958,110 @@ class GameEngine:
         elif event.sym in (tcod.event.KeySym.E, tcod.event.KeySym.RETURN):
             self._use_character_slot()
         return True
+
+    def _adjacent_merchant(self):
+        if not self.player:
+            return None
+        for dx, dy in ((0, -1), (0, 1), (-1, 0), (1, 0), (0, 0)):
+            entity = self._character_at(self.player.x + dx, self.player.y + dy)
+            if entity and merchant_record(getattr(entity, "id", "") or ""):
+                return entity
+        return None
+
+    def _close_modals(self):
+        self.showing_help = False
+        self.is_inventory_open = False
+        self.is_talents_open = False
+        self.is_character_open = False
+        self.is_shop_open = False
+        self.oil_overlay = None
+
+    def _try_open_shop(self) -> bool:
+        entity = self._adjacent_merchant()
+        if not entity:
+            self.add_message("Лавки рядом нет.")
+            return False
+        character_id = getattr(entity, "id", "") or ""
+        if not can_open_shop(self.player, character_id):
+            self.add_message(refuse_shop(self.player, character_id))
+            return False
+        self._close_modals()
+        self.is_shop_open = True
+        self.shop_tab = "sell"
+        self.shop_selected_index = 0
+        self.shop_merchant_id = character_id
+        self.shop_merchant_name = getattr(entity, "name", None) or "Лавочник"
+        return True
+
+    def _shop_rows(self):
+        if self.shop_tab == "buy":
+            record = merchant_record(self.shop_merchant_id) or {}
+            rows = []
+            for item_id in record.get("sells") or ():
+                item = (
+                    self.entity_factory.create_item(item_id)
+                    if self.entity_factory
+                    else None
+                )
+                if item is not None:
+                    rows.append(item)
+            return rows
+        return sellable_items(self.player)
+
+    def _handle_shop_input(self, event) -> bool:
+        rows = self._shop_rows()
+        last = max(0, len(rows) - 1)
+        if event.sym in (tcod.event.KeySym.B, tcod.event.KeySym.ESCAPE):
+            self.is_shop_open = False
+            return True
+        if event.sym in (
+            tcod.event.KeySym.TAB,
+            tcod.event.KeySym.LEFT,
+            tcod.event.KeySym.H,
+            tcod.event.KeySym.RIGHT,
+            tcod.event.KeySym.L,
+        ):
+            self.shop_tab = "buy" if self.shop_tab == "sell" else "sell"
+            self.shop_selected_index = 0
+            return True
+        if not rows:
+            return True
+        if event.sym in (tcod.event.KeySym.UP, tcod.event.KeySym.K):
+            self.shop_selected_index = max(0, self.shop_selected_index - 1)
+        elif event.sym in (tcod.event.KeySym.DOWN, tcod.event.KeySym.J):
+            self.shop_selected_index = min(last, self.shop_selected_index + 1)
+        elif event.sym in (tcod.event.KeySym.E, tcod.event.KeySym.RETURN):
+            self._shop_confirm()
+        return True
+
+    def _shop_confirm(self):
+        rows = self._shop_rows()
+        if not rows:
+            self.add_message(
+                "Нечего продать." if self.shop_tab == "sell" else "Пока нечего купить."
+            )
+            return
+        index = min(max(0, self.shop_selected_index), len(rows) - 1)
+        item_id = getattr(rows[index], "id", "") or ""
+        if self.shop_tab == "sell":
+            _ok, phrase = apply_sell(
+                self.player, item_id, self.standing, self.shop_merchant_id
+            )
+        else:
+            _ok, phrase = apply_buy(
+                self.player,
+                item_id,
+                self.entity_factory,
+                self.standing,
+                self.shop_merchant_id,
+            )
+        self.add_message(phrase)
+        self._refresh_player_weapon()
+        rows = self._shop_rows()
+        if rows:
+            self.shop_selected_index = min(self.shop_selected_index, len(rows) - 1)
+        else:
+            self.shop_selected_index = 0
 
     def _use_selected_item(self):
         """Использовать выбранный предмет в инвентаре."""
@@ -1309,6 +1441,22 @@ class GameEngine:
             self.current_dialogue_choices = []
             self.current_dialogue_portrait = ''
             self.current_check_banner = ''
+            return True
+        elif event.sym == tcod.event.KeySym.B:
+            portrait = self.current_dialogue_portrait
+            result = self.dialogue_engine.finish()
+            self._apply_dialogue_result(result)
+            if self.state != GameState.ENDING:
+                self.state = GameState.PLAYING
+            self.current_dialogue_text = ''
+            self.current_dialogue_choices = []
+            self.current_dialogue_portrait = ''
+            self.current_check_banner = ''
+            if merchant_record(portrait):
+                self._try_open_shop()
+            else:
+                self.add_message("Лавки рядом нет.")
+            return True
         elif event.sym in (tcod.event.KeySym.SPACE, tcod.event.KeySym.RETURN):
             if self.current_dialogue_choices:
                 return True
@@ -1585,6 +1733,7 @@ class GameEngine:
                         flags=self.flags,
                         san=self.player.san,
                         player=self.player,
+                        standing=getattr(self, "standing", None),
                     ):
                         self.state = GameState.DIALOGUE
                         self.current_dialogue_speaker = entity.name
@@ -1623,8 +1772,18 @@ class GameEngine:
             if item:
                 self.player.inventory.append(item)
                 self.add_message(f"Получено: {item.name}")
+        paid = int(result.get("kopecks_delta") or 0)
+        if paid:
+            self.add_message(f"В кармане {kopeck_phrase(paid)}.")
         for flag in new_flags:
             self.flags.add(flag)
+        if not isinstance(getattr(self, "standing", None), dict):
+            self.standing = {}
+        remember(
+            self.standing,
+            result.get("character_id") or "",
+            int(result.get("standing_delta") or 0),
+        )
         self._refresh_player_weapon()
         self._maybe_spawn_double()
         ending_id = result.get('ending_id')
@@ -2007,6 +2166,18 @@ class GameEngine:
         if self.is_character_open and self.player:
             self.renderer.draw_character(
                 self.player, self.character_selected_index
+            )
+
+        if self.is_shop_open and self.player:
+            from engine.look_memory import standing_of
+
+            self.renderer.draw_shop(
+                self.player,
+                merchant_name=self.shop_merchant_name,
+                tab=self.shop_tab,
+                rows=self._shop_rows(),
+                selected_index=self.shop_selected_index,
+                standing=standing_of(self.standing, self.shop_merchant_id),
             )
 
         if self.oil_overlay:

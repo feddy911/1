@@ -48,7 +48,9 @@ CREATE TABLE items (
     is_quest_item INTEGER DEFAULT 0,
     use_effect TEXT,
     content TEXT DEFAULT '',
-    equip_slot TEXT
+    equip_slot TEXT,
+    look TEXT,
+    value INTEGER DEFAULT 0
 );
 
 -- ============================================================

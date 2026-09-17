@@ -88,6 +88,16 @@ def assert_map_walkable(errors, name, grid, start, expect_width):
 
 
 
+def _to_choices(dialogue, hops=8):
+    """До выбора. Занятие может вставить строку после вида."""
+    kind, text = dialogue.present()
+    for _ in range(hops):
+        if kind in ("choices", "end"):
+            return kind, text
+        kind, text = dialogue.advance()
+    return kind, text
+
+
 def main():
     errors = []
     from engine.sound import set_enabled as _mute_sound
@@ -281,6 +291,8 @@ def main():
     from engine.paintings import LOCATION_FILES, oil_id_for_item, oil_id_for_map, painting_path
 
     knife = EntityFactory(db).create_item("item_knife")
+    if knife is None or int(getattr(knife, "value", 0) or 0) != 3:
+        errors.append("нож без цены")
     if not knife or knife.type != "weapon" or knife.damage_die != "1d6":
         errors.append("ржавый нож без кости")
     host = GameEngine.__new__(GameEngine)
@@ -355,6 +367,475 @@ def main():
     renderer_src = (ROOT / "engine" / "renderer.py").read_text(encoding="utf-8")
     if "Халат не снимают" in engine_src or "Халат не снимают" in renderer_src:
         errors.append("халат всё ещё нельзя снять")
+    from engine.dialogue_engine import DialogueEngine, kopeck_phrase
+    from engine.look_memory import is_armed, look_flag, pocket_flags, worn_look
+    if (
+        kopeck_phrase(1) != "1 копейка"
+        or kopeck_phrase(3) != "3 копейки"
+        or kopeck_phrase(5) != "5 копеек"
+        or kopeck_phrase(11) != "11 копеек"
+        or kopeck_phrase(21) != "21 копейка"
+    ):
+        errors.append("копейки без русской формы")
+
+    if worn_look(None) != "clinic":
+        errors.append("без игрока вид не казённый")
+    host.player.inventory = [robe, coat]
+    host.player.equipped = {"body": "item_robe"}
+    if worn_look(host.player) != "clinic":
+        errors.append("халат не даёт казённый вид")
+    host.player.equipped = {"body": "item_coat"}
+    if worn_look(host.player) != "tenant":
+        errors.append("сюртук не даёт вид жильца")
+    host.player.equipped = {}
+    if worn_look(host.player) != "bare":
+        errors.append("снятый халат не голое тело")
+    robe_row = db.get_item("item_robe") or {}
+    coat_row = db.get_item("item_coat") or {}
+    if (robe_row.get("look") or "") != "clinic" or (coat_row.get("look") or "") != "tenant":
+        errors.append("одежда без вида")
+    de_look = DialogueEngine(db)
+    coat_player = players["seeker"]
+    saved_inv = list(coat_player.inventory)
+    saved_eq = dict(getattr(coat_player, "equipped", None) or {})
+    coat_player.inventory = [coat]
+    coat_player.equipped = {"body": "item_coat"}
+    if not de_look.start_dialogue(
+        "dialogue_lukin_intro", flags=set(), san=70, player=coat_player
+    ):
+        errors.append("лукин не стартует в сюртуке")
+    else:
+        _kind, lukin_text = de_look.present()
+        low = (lukin_text or "").lower()
+        if "сюртук" not in low:
+            errors.append(f"лукин в сюртуке без сюртука: {lukin_text}")
+        if "халат вижу" in low:
+            errors.append(f"лукин в сюртуке всё ещё видит халат: {lukin_text}")
+        de_look.finish()
+    coat_player.inventory = saved_inv
+    coat_player.equipped = saved_eq
+    honest = DialogueEngine(db)
+    if not honest.start_dialogue(
+        "dialogue_watchman_intro", flags=set(), san=70, player=players["mystic"]
+    ):
+        errors.append("постовой не стартует для памяти")
+    else:
+        honest.present()
+        honest.advance()
+        honest.choose(1)
+        fin_mem = honest.finish()
+        if int(fin_mem.get("standing_delta") or 0) <= 0:
+            errors.append(f"честный разговор не помнят: {fin_mem}")
+        if (fin_mem.get("character_id") or "") != "watchman_petrov":
+            errors.append(f"память без человека: {fin_mem}")
+    lie_mem = DialogueEngine(db)
+    if lie_mem.start_dialogue(
+        "dialogue_watchman_intro",
+        flags=set(),
+        san=70,
+        player=players["seeker"],
+    ):
+        import engine.rpg_system as rpg_look
+
+        old_d6 = rpg_look.roll_3d6
+        rpg_look.roll_3d6 = lambda: 3
+        lie_mem.present()
+        lie_mem.advance()
+        choices_mem = lie_mem.get_choices()
+        idx_lie = next(
+            (i for i, line in enumerate(choices_mem) if "болен" in line.lower()),
+            None,
+        )
+        if idx_lie is None:
+            errors.append(f"нет лжи для памяти: {choices_mem}")
+        else:
+            lie_mem.choose(idx_lie)
+            fin_lie_mem = lie_mem.finish()
+            if int(fin_lie_mem.get("standing_delta") or 0) >= 0:
+                errors.append(f"ложь не портит память: {fin_lie_mem}")
+        rpg_look.roll_3d6 = old_d6
+    if "standing_delta" not in (ROOT / "engine" / "dialogue_engine.py").read_text(
+        encoding="utf-8"
+    ):
+        errors.append("диалог не считает память")
+    saved_inv_arm = list(players["seeker"].inventory)
+    saved_eq_arm = dict(getattr(players["seeker"], "equipped", None) or {})
+    players["seeker"].inventory = [robe, knife]
+    players["seeker"].equipped = {}
+    host._equip_defaults()
+    if not is_armed(players["seeker"]) or look_flag(players["seeker"]) != "look_clinic_armed":
+        errors.append("пробуждение без ножа на виду")
+    de_knife = DialogueEngine(db)
+    if not de_knife.start_dialogue(
+        "dialogue_watchman_intro", flags=set(), san=70, player=players["seeker"]
+    ):
+        errors.append("постовой не стартует с ножом")
+    else:
+        _kind, knife_text = de_knife.present()
+        low_knife = (knife_text or "").lower()
+        if "нож" not in low_knife:
+            errors.append(f"постовой нож не видит: {knife_text}")
+        if "халат я вижу" in low_knife:
+            errors.append(f"нож не перекрыл халат: {knife_text}")
+        de_knife.finish()
+    de_pante_arm = DialogueEngine(db)
+    if de_pante_arm.start_dialogue(
+        "dialogue_panteleimon_intro", flags=set(), san=70, player=players["seeker"]
+    ):
+        _kind, pante_arm = de_pante_arm.present()
+        if "нож" not in (pante_arm or "").lower():
+            errors.append(f"сиделка нож не видит: {pante_arm}")
+        de_pante_arm.finish()
+    else:
+        errors.append("сиделка не стартует с ножом")
+    players["seeker"].equipped = {"body": "item_robe"}
+    if is_armed(players["seeker"]) or look_flag(players["seeker"]) != "look_clinic":
+        errors.append("нож в кармане всё ещё на виду")
+    de_luk_up = DialogueEngine(db)
+    if not de_luk_up.start_dialogue(
+        "dialogue_lukin_repeat", flags=set(), san=70, player=players["seeker"]
+    ):
+        errors.append("лукин повтор не стартует в халате")
+    else:
+        de_luk_up.present()
+        de_luk_up.advance()
+        up_opts = de_luk_up.get_choices()
+        idx_up = next((i for i, line in enumerate(up_opts) if "наверх" in line.lower()), None)
+        if idx_up is None:
+            errors.append(f"нет ступеней у лукина: {up_opts}")
+        else:
+            _kind, up_text = de_luk_up.choose(idx_up)
+            if "халат наверх не пускаю" not in (up_text or "").lower():
+                errors.append(f"халат на ступенях без отказа: {up_text}")
+        de_luk_up.finish()
+    de_luk_shop = DialogueEngine(db)
+    if de_luk_shop.start_dialogue(
+        "dialogue_lukin_repeat", flags=set(), san=70, player=players["seeker"]
+    ):
+        de_luk_shop.present()
+        de_luk_shop.advance()
+        shop_opts = de_luk_shop.get_choices()
+        idx_shop = next(
+            (i for i, line in enumerate(shop_opts) if "ключ от квартиры" in line.lower()),
+            None,
+        )
+        if idx_shop is None:
+            errors.append(f"нет ключа у лукина: {shop_opts}")
+        else:
+            _kind, shop_text = de_luk_shop.choose(idx_shop)
+            if "не торгую" not in (shop_text or "").lower():
+                errors.append(f"халату торгуют: {shop_text}")
+        de_luk_shop.finish()
+    players["seeker"].inventory = [coat]
+    players["seeker"].equipped = {"body": "item_coat"}
+    de_luk_coat = DialogueEngine(db)
+    if de_luk_coat.start_dialogue(
+        "dialogue_lukin_repeat", flags=set(), san=70, player=players["seeker"]
+    ):
+        de_luk_coat.present()
+        de_luk_coat.advance()
+        coat_opts = de_luk_coat.get_choices()
+        idx_coat_up = next(
+            (i for i, line in enumerate(coat_opts) if "наверх" in line.lower()), None
+        )
+        if idx_coat_up is None:
+            errors.append(f"сюртук без ступеней: {coat_opts}")
+        else:
+            _kind, coat_up = de_luk_coat.choose(idx_coat_up)
+            low_coat_up = (coat_up or "").lower()
+            if "халат наверх не пускаю" in low_coat_up:
+                errors.append(f"сюртук слышит отказ халата: {coat_up}")
+            if "сюртук" not in low_coat_up:
+                errors.append(f"сюртук на ступенях без ткани: {coat_up}")
+        de_luk_coat.finish()
+    look_doors = db.conn.execute(
+        """SELECT map_id, x, y, required_key_id FROM door_locks
+           WHERE required_key_id LIKE '%look%'
+              OR required_key_id LIKE '%robe%'
+              OR required_key_id LIKE '%халат%'"""
+    ).fetchall()
+    if look_doors:
+        errors.append(f"вид закрыл дверь замком: {look_doors}")
+    if db.get_door_lock("street_tenement", 27, 2) != "key_tenement":
+        errors.append("квартиру закрыли не ключом")
+    players["seeker"].inventory = saved_inv_arm
+    players["seeker"].equipped = saved_eq_arm
+    key_arg = EntityFactory(db).create_item("key_tenement")
+    note_arg = EntityFactory(db).create_item("note_canal")
+    saved_inv_arg = list(players["seeker"].inventory)
+    saved_eq_arg = dict(getattr(players["seeker"], "equipped", None) or {})
+    players["seeker"].inventory = []
+    players["seeker"].equipped = {}
+    if pocket_flags(None) or pocket_flags(players["seeker"]):
+        errors.append("пустой карман даёт довод")
+    de_no_knife = DialogueEngine(db)
+    if de_no_knife.start_dialogue(
+        "dialogue_lukin_intro", flags=set(), san=70, player=players["seeker"]
+    ):
+        de_no_knife.present()
+        de_no_knife.advance()
+        if any("нож на прилавок" in c.lower() for c in de_no_knife.get_choices()):
+            errors.append("нож в речи без ножа")
+        de_no_knife.finish()
+    else:
+        errors.append("лукин не стартует без довода")
+    players["seeker"].inventory = [knife]
+    if "have_item_knife" not in pocket_flags(players["seeker"]):
+        errors.append("нож в кармане не довод")
+    de_yes_knife = DialogueEngine(db)
+    if not de_yes_knife.start_dialogue(
+        "dialogue_lukin_intro", flags=set(), san=70, player=players["seeker"]
+    ):
+        errors.append("лукин не стартует с ножом на стол")
+    else:
+        de_yes_knife.present()
+        de_yes_knife.advance()
+        knife_opts = de_yes_knife.get_choices()
+        idx_knife = next(
+            (i for i, line in enumerate(knife_opts) if "нож на прилавок" in line.lower()),
+            None,
+        )
+        if idx_knife is None:
+            errors.append(f"нож не кладут: {knife_opts}")
+        else:
+            if "копейк" in knife_opts[idx_knife].lower():
+                errors.append(f"цена на выборе: {knife_opts[idx_knife]}")
+            _kind, knife_arg_text = de_yes_knife.choose(idx_knife)
+            if "не плачу" not in (knife_arg_text or "").lower():
+                errors.append(f"нож без ветки: {knife_arg_text}")
+            if de_yes_knife.get_check_banner():
+                errors.append(f"довод бросает говорить: {de_yes_knife.get_check_banner()}")
+            if not any(getattr(item, "id", None) == "item_knife" for item in players["seeker"].inventory):
+                errors.append("нож съели как товар")
+            if int(getattr(players["seeker"], "kopecks", 0) or 0):
+                errors.append("халату заплатили")
+        de_yes_knife.finish()
+    sale_knife = EntityFactory(db).create_item("item_knife")
+    players["seeker"].inventory = [coat, sale_knife] if coat and sale_knife else []
+    players["seeker"].equipped = {"body": "item_coat"}
+    players["seeker"].kopecks = 0
+    de_sale = DialogueEngine(db)
+    if not de_sale.start_dialogue(
+        "dialogue_lukin_intro", flags=set(), san=70, player=players["seeker"]
+    ):
+        errors.append("лукин не стартует в сюртуке с ножом")
+    else:
+        de_sale.present()
+        de_sale.advance()
+        sale_opts = de_sale.get_choices()
+        idx_sale = next(
+            (i for i, line in enumerate(sale_opts) if "нож на прилавок" in line.lower()),
+            None,
+        )
+        if idx_sale is None:
+            errors.append(f"нож не кладут в сюртуке: {sale_opts}")
+        else:
+            if "копейк" in sale_opts[idx_sale].lower() or "говорить" in sale_opts[idx_sale].lower():
+                errors.append(f"торг на выборе: {sale_opts[idx_sale]}")
+            _kind, sale_text = de_sale.choose(idx_sale)
+            if "погляжу" not in (sale_text or "").lower():
+                errors.append(f"сюртуку торгуют ртом: {sale_text}")
+            if de_sale.get_check_banner():
+                errors.append(f"прилавок бросает говорить: {de_sale.get_check_banner()}")
+            if not any(getattr(item, "id", None) == "item_knife" for item in players["seeker"].inventory):
+                errors.append("нож съели речью")
+            if int(getattr(players["seeker"], "kopecks", 0) or 0):
+                errors.append("речь заплатила за нож")
+        de_sale.finish()
+    warm_knife = EntityFactory(db).create_item("item_knife")
+    players["seeker"].inventory = [coat, warm_knife] if coat and warm_knife else []
+    players["seeker"].equipped = {"body": "item_coat"}
+    players["seeker"].kopecks = 0
+    de_warm = DialogueEngine(db)
+    if de_warm.start_dialogue(
+        "dialogue_lukin_intro",
+        flags=set(),
+        san=70,
+        player=players["seeker"],
+        standing={"shopkeeper_lukin": 2},
+    ):
+        de_warm.present()
+        de_warm.advance()
+        warm_opts = de_warm.get_choices()
+        idx_warm = next(
+            (i for i, line in enumerate(warm_opts) if "нож на прилавок" in line.lower()),
+            None,
+        )
+        if idx_warm is None:
+            errors.append("нож не кладут при памяти")
+        else:
+            _kind, warm_text = de_warm.choose(idx_warm)
+            if "погляжу" not in (warm_text or "").lower():
+                errors.append(f"память не отослала к прилавку: {warm_text}")
+            if int(getattr(players["seeker"], "kopecks", 0) or 0):
+                errors.append("память заплатила в речи")
+        de_warm.finish()
+    else:
+        errors.append("лукин не стартует с памятью")
+    robe_sale = EntityFactory(db).create_item("item_robe")
+    knife_arm = EntityFactory(db).create_item("item_knife")
+    players["seeker"].inventory = [robe_sale, knife_arm] if robe_sale and knife_arm else []
+    players["seeker"].equipped = {"body": "item_robe", "main_hand": "item_knife"}
+    players["seeker"].kopecks = 0
+    de_arm_sale = DialogueEngine(db)
+    if de_arm_sale.start_dialogue(
+        "dialogue_lukin_intro", flags=set(), san=70, player=players["seeker"]
+    ):
+        de_arm_sale.present()
+        de_arm_sale.advance()
+        arm_opts = de_arm_sale.get_choices()
+        idx_arm = next(
+            (i for i, line in enumerate(arm_opts) if "нож на прилавок" in line.lower()),
+            None,
+        )
+        if idx_arm is None:
+            errors.append(f"нож в руке не кладут: {arm_opts}")
+        else:
+            _kind, arm_text = de_arm_sale.choose(idx_arm)
+            if "не плачу" not in (arm_text or "").lower():
+                errors.append(f"халат с ножом без отказа: {arm_text}")
+            if not any(getattr(item, "id", None) == "item_knife" for item in players["seeker"].inventory):
+                errors.append("нож из халата взяли как товар")
+            if int(getattr(players["seeker"], "kopecks", 0) or 0):
+                errors.append("халату с ножом заплатили")
+        de_arm_sale.finish()
+    from engine.shop import (
+        apply_buy,
+        apply_sell,
+        buy_price,
+        can_open_shop,
+        sell_price,
+    )
+    if can_open_shop(players["seeker"], "shopkeeper_lukin"):
+        errors.append("халату открыли витрину")
+    clinic_try, clinic_line = apply_sell(
+        players["seeker"], "item_knife", {}, "shopkeeper_lukin"
+    )
+    if clinic_try:
+        errors.append("халату продали на витрине")
+    if "халату" not in (clinic_line or "").lower():
+        errors.append(f"халату без отказа витрины: {clinic_line}")
+    shop_knife = EntityFactory(db).create_item("item_knife")
+    players["seeker"].inventory = [coat, shop_knife] if coat and shop_knife else []
+    players["seeker"].equipped = {"body": "item_coat"}
+    players["seeker"].kopecks = 0
+    if not can_open_shop(players["seeker"], "shopkeeper_lukin"):
+        errors.append("сюртуку нет витрины")
+    if buy_price(3, 0) <= sell_price(3, 0):
+        errors.append("витрина крутит одно железо")
+    sold_ok, sold_line = apply_sell(
+        players["seeker"], "item_knife", {}, "shopkeeper_lukin"
+    )
+    if not sold_ok or "3 копейки" not in (sold_line or "").lower():
+        errors.append(f"продажа без цены: {sold_line}")
+    if any(getattr(item, "id", None) == "item_knife" for item in players["seeker"].inventory):
+        errors.append("витрина не взяла нож")
+    if int(getattr(players["seeker"], "kopecks", 0) or 0) != 3:
+        errors.append("продажа не дала трёх копеек")
+    buy_fail, buy_fail_line = apply_buy(
+        players["seeker"], "item_knife", EntityFactory(db), {}, "shopkeeper_lukin"
+    )
+    if buy_fail:
+        errors.append("купили нож без денег")
+    if "мало" not in (buy_fail_line or "").lower():
+        errors.append(f"нет отказа в долг: {buy_fail_line}")
+    players["seeker"].kopecks = 6
+    buy_ok, buy_line = apply_buy(
+        players["seeker"], "item_knife", EntityFactory(db), {}, "shopkeeper_lukin"
+    )
+    if not buy_ok or not any(
+        getattr(item, "id", None) == "item_knife" for item in players["seeker"].inventory
+    ):
+        errors.append(f"покупка не дала нож: {buy_line}")
+    if int(getattr(players["seeker"], "kopecks", 0) or 0) != 0:
+        errors.append("покупка не сняла копейки")
+    warm_shop = EntityFactory(db).create_item("item_knife")
+    players["seeker"].inventory = [coat, warm_shop] if coat and warm_shop else []
+    players["seeker"].equipped = {"body": "item_coat"}
+    players["seeker"].kopecks = 0
+    warm_ok, warm_line = apply_sell(
+        players["seeker"],
+        "item_knife",
+        {"shopkeeper_lukin": 2},
+        "shopkeeper_lukin",
+    )
+    if not warm_ok or "5 копеек" not in (warm_line or "").lower():
+        errors.append(f"память не в цене витрины: {warm_line}")
+    if key_arg is not None:
+        players["seeker"].inventory = [coat, key_arg]
+        players["seeker"].equipped = {"body": "item_coat"}
+        key_try, _key_line = apply_sell(
+            players["seeker"], "key_tenement", {}, "shopkeeper_lukin"
+        )
+        if key_try:
+            errors.append("ключ продали как крупу")
+    sold = db.conn.execute(
+        """SELECT dialogue_id, takes_item_id FROM dialogue_lines
+           WHERE takes_item_id IS NOT NULL AND TRIM(takes_item_id) != ''"""
+    ).fetchall()
+    if sold:
+        errors.append(f"торг остался в речи: {sold}")
+    if "KeySym.B" not in (ROOT / "engine" / "game_engine.py").read_text(encoding="utf-8"):
+        errors.append("нет клавиши витрины")
+    players["seeker"].inventory = [key_arg] if key_arg else []
+    players["seeker"].equipped = {}
+    players["seeker"].kopecks = 0
+    de_key = DialogueEngine(db)
+    if de_key.start_dialogue(
+        "dialogue_praskovya_intro", flags=set(), san=70, player=players["seeker"]
+    ):
+        de_key.present()
+        de_key.advance()
+        key_opts = de_key.get_choices()
+        idx_key = next(
+            (i for i, line in enumerate(key_opts) if "ключ квартиры" in line.lower()),
+            None,
+        )
+        if idx_key is None:
+            errors.append(f"ключ не кладут: {key_opts}")
+        else:
+            _kind, key_text = de_key.choose(idx_key)
+            if "ключ без лица" not in (key_text or "").lower():
+                errors.append(f"ключ без ветки: {key_text}")
+        de_key.finish()
+    else:
+        errors.append("прасковья не стартует с ключом")
+    players["seeker"].inventory = [note_arg] if note_arg else []
+    de_note = DialogueEngine(db)
+    if de_note.start_dialogue(
+        "dialogue_panteleimon_intro", flags=set(), san=70, player=players["seeker"]
+    ):
+        de_note.present()
+        de_note.advance()
+        note_opts = de_note.get_choices()
+        idx_note = next(
+            (i for i, line in enumerate(note_opts) if "бумага" in line.lower() and "канала" in line.lower()),
+            None,
+        )
+        if idx_note is None:
+            errors.append(f"записку не кладут: {note_opts}")
+        else:
+            _kind, note_text = de_note.choose(idx_note)
+            if "бумагу видел" not in (note_text or "").lower():
+                errors.append(f"записка без ветки: {note_text}")
+            if de_note.get_check_banner():
+                errors.append("записка бросает говорить")
+        de_note.finish()
+    else:
+        errors.append("сиделка не стартует с запиской")
+    schema_txt = (ROOT / "tools" / "schema.sql").read_text(encoding="utf-8")
+    if "weight" in schema_txt:
+        errors.append("у вещи появился вес")
+    if "value INTEGER" not in schema_txt:
+        errors.append("в схеме нет value")
+    if "shop_id" in schema_txt:
+        errors.append("витрина в схеме")
+    if key_arg is not None and int(getattr(key_arg, "value", 0) or 0):
+        errors.append("ключ стал товаром")
+    if note_arg is not None and int(getattr(note_arg, "value", 0) or 0):
+        errors.append("записка стала товаром")
+    players["seeker"].inventory = saved_inv_arg
+    players["seeker"].equipped = saved_eq_arg
     host.player.inventory = []
     host.player.equipped_weapon_id = None
     host._refresh_player_weapon()
@@ -412,6 +893,11 @@ def main():
         errors.append("нет вида места")
     if "в руке" not in renderer_src:
         errors.append("HUD не показывает руку")
+    hud_fn = renderer_src.split("def draw_hud", 1)[-1].split("\n    def ", 1)[0]
+    if "копейк" in hud_fn:
+        errors.append("цена вылезла на рамку")
+    if "def draw_shop" not in renderer_src or "продажа" not in renderer_src:
+        errors.append("нет витрины покупки и продажи")
     if "def draw_character" not in renderer_src or "НА СЕБЕ" not in renderer_src:
         errors.append("нет окна персонажа со слотами")
     if "EQUIP_SLOTS" not in engine_src or "is_character_open" not in engine_src:
@@ -788,9 +1274,7 @@ def main():
         errors.append(f"признание теней без воли в скобках: {seen_c}")
     de_seek = DialogueEngine(db)
     if de_seek.start_dialogue("dialogue_nastasya_intro", flags={"class_seeker"}, san=80):
-        de_seek.present()
-        de_seek.advance()
-        kind_s, _t = de_seek.advance()
+        kind_s, _t = _to_choices(de_seek)
         n_seek = len(de_seek.get_choices())
         if kind_s != "choices" or n_seek != 4:
             errors.append(f"искатель должен слышать 4-й ответ Настасьи: {n_seek}")
@@ -1277,8 +1761,7 @@ def main():
         san=70,
         player=players["seeker"],
     ):
-        de_tag.present()
-        de_tag.advance()
+        _to_choices(de_tag)
         tagged = de_tag.get_choices()
         lie = next((line for line in tagged if "болен" in line.lower()), "")
         hear = next((line for line in tagged if "свисток" in line.lower()), "")
@@ -1316,13 +1799,41 @@ def main():
         flags={"class_seeker", "knows_lizaveta"},
         san=70,
     ):
-        de_five.present()
-        de_five.advance()
+        _to_choices(de_five)
         n_five = len(de_five.get_choices())
         if n_five != 5:
             errors.append(f"у постового с классом и бумагой не 5 ответов: {de_five.get_choices()}")
     else:
         errors.append("не стартует постовой для пяти ответов")
+    night_needles = (
+        ("class_seeker", "пыль"),
+        ("class_mystic", "счёты"),
+        ("class_rebel", "ящик"),
+    )
+    night_texts = []
+    for cid, needle in night_needles:
+        de_night = DialogueEngine(db)
+        if not de_night.start_dialogue(
+            "dialogue_lukin_intro", flags={cid}, san=70
+        ):
+            errors.append(f"лукин не стартует для {cid}")
+            continue
+        de_night.present()
+        _kind, night_line = de_night.advance()
+        blob = (night_line or "").lower()
+        night_texts.append(blob)
+        if needle not in blob:
+            errors.append(f"ночь {cid} без своего лица: {night_line}")
+        de_night.finish()
+    if len(set(night_texts)) < 3:
+        errors.append(f"три занятия слышат одну ночь: {night_texts}")
+    de_plain = DialogueEngine(db)
+    if de_plain.start_dialogue("dialogue_lukin_intro", flags=set(), san=70):
+        de_plain.present()
+        kind_plain, _ = de_plain.advance()
+        if kind_plain != "choices":
+            errors.append(f"без занятия вставили чужую ночь: {kind_plain}")
+        de_plain.finish()
 
     de_dup = DialogueEngine(db)
     if de_dup.start_dialogue(
@@ -1364,6 +1875,33 @@ def main():
         errors.append(
             f"живой потолок ответов {max_n} у {max_id} > {MAX_DIALOGUE_CHOICES}"
         )
+    stuffed = players["seeker"]
+    saved_inv_cap = list(stuffed.inventory)
+    stuffed.inventory = [
+        item
+        for item in (
+            EntityFactory(db).create_item("item_knife"),
+            EntityFactory(db).create_item("key_tenement"),
+            EntityFactory(db).create_item("note_canal"),
+        )
+        if item
+    ]
+    for did in (
+        "dialogue_lukin_repeat",
+        "dialogue_praskovya_repeat",
+        "dialogue_panteleimon_repeat",
+    ):
+        de_cap = DialogueEngine(db)
+        if not de_cap.start_dialogue(did, flags=pile, san=70, player=stuffed):
+            errors.append(f"не стартует {did} с доводом")
+            continue
+        de_cap.present()
+        de_cap.advance()
+        n_opts = len(de_cap.get_choices())
+        if n_opts > MAX_DIALOGUE_CHOICES:
+            errors.append(f"довод пробил потолок {n_opts} у {did}: {de_cap.get_choices()}")
+        de_cap.finish()
+    stuffed.inventory = saved_inv_cap
     engine_src = (ROOT / "engine" / "game_engine.py").read_text(encoding="utf-8")
     if "choice_index_from_key" not in engine_src:
         errors.append("движок диалога не берёт клавиши 1–9")
@@ -1883,8 +2421,7 @@ def main():
         ):
             errors.append("не стартует постовой для свистка")
         else:
-            de_wh.present()
-            de_wh.advance()
+            _to_choices(de_wh)
             choices = de_wh.get_choices()
             idx = next(
                 (i for i, line in enumerate(choices) if "свисток" in line.lower()),
@@ -1914,8 +2451,7 @@ def main():
             san=70,
             player=players["mystic"],
         ):
-            de_wh_ok.present()
-            de_wh_ok.advance()
+            _to_choices(de_wh_ok)
             choices = de_wh_ok.get_choices()
             idx = next(
                 (i for i, line in enumerate(choices) if "свисток" in line.lower()),
@@ -2186,6 +2722,27 @@ def main():
         errors.append(f"метка умения пропала при переносе: {wrapped_talk}")
     if len(wrapped_talk) < 2:
         errors.append(f"длинный ответ не перенёсся на строки: {wrapped_talk}")
+    hud_w = SCREEN_WIDTH - 4
+    hud_goal = (
+        "Имя и долг (Лизавете) сказаны. Туман на востоке улицы уже слышал. "
+        "Слышал — и молчит."
+    )
+    wrapped_hud = engine.renderer._wrap_text(hud_goal, hud_w)
+    if "молчит" not in " ".join(wrapped_hud):
+        errors.append(f"цель на карте больного потеряла хвост: {wrapped_hud}")
+    if any(len(row) > hud_w for row in wrapped_hud):
+        errors.append(f"цель вылезла за рамку: {wrapped_hud}")
+    if len(wrapped_hud) < 2:
+        errors.append(f"цель на карте больного не переносится: {wrapped_hud}")
+    long_log = (
+        "Иванов выехал. Кто-то «взят в заведение на ночь» — "
+        "имя смазали пальцем, до дыр"
+    )
+    wrapped_log = engine.renderer._wrap_text(long_log, hud_w)
+    if any(len(row) > hud_w for row in wrapped_log):
+        errors.append(f"показание вылезло за рамку: {wrapped_log}")
+    if "до дыр" not in " ".join(wrapped_log):
+        errors.append(f"показание потеряло хвост: {wrapped_log}")
 
     saved_talk = (
         engine.current_map_id,

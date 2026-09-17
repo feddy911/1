@@ -3,6 +3,13 @@ from typing import Optional, List, Dict, Tuple
 
 from engine.quest_system import DEBT_FLAGS, NAME_FLAGS, enrich_flags
 from engine.rpg_system import SAN_SPEECH_CHARACTERS, SAN_SPEECH_FLAGS, SKILL_NAMES
+from engine.shop import (
+    counter_item_value,
+    find_inventory_item,
+    kopeck_phrase,
+    quoted_price,
+    take_item_from_player,
+)
 
 TRUTH_FLAGS = NAME_FLAGS | DEBT_FLAGS
 
@@ -97,19 +104,33 @@ def format_check_banner(skill_id: str, total: int, target: int, success: bool, b
 class DialogueState:
     """Состояние текущего диалога."""
 
-    def __init__(self, dialogue_data: Dict, flags=None, san: int = 100, player=None):
+    def __init__(
+        self, dialogue_data: Dict, flags=None, san: int = 100, player=None, standing=None
+    ):
         self.dialogue_id = dialogue_data['id']
         self.character_id = dialogue_data['character_id']
         self.lines = dialogue_data['lines']
         self.by_order = {line['order_num']: line for line in self.lines}
         self.flags = enrich_flags(flags)
+        from engine.look_memory import pocket_flags, sight_and_memory_flags
+
+        self.flags |= sight_and_memory_flags(
+            player, standing=standing, character_id=self.character_id
+        )
+        self.flags |= pocket_flags(player)
         self.san = san
         self.player = player
+        self.standing = standing if isinstance(standing, dict) else {}
         self._truths_held = TRUTH_FLAGS & set(self.flags)
         self.current_order = min(self.by_order) if self.by_order else 0
         self.finished = False
         self.sanity_change_total = 0
+        self.standing_delta = 0
+        self._lied = False
         self.items_given: List[str] = []
+        self.items_taken: List[str] = []
+        self.kopecks_delta = 0
+        self._quoted_price = None
         self.flags_set: List[str] = []
         self.ending_id: Optional[str] = None
         self.last_text = ''
@@ -143,9 +164,32 @@ class DialogueState:
         self.sanity_change_total += change
         if line.get('gives_item_id'):
             self.items_given.append(line['gives_item_id'])
+        take_id = (line.get("takes_item_id") or "").strip()
+        if take_id and self.player is not None:
+            held = find_inventory_item(self.player, take_id)
+            if counter_item_value(held) > 0:
+                price = quoted_price(
+                    self.player, take_id, self.standing, self.character_id
+                )
+                if take_item_from_player(self.player, take_id):
+                    self._quoted_price = price
+                    self.items_taken.append(take_id)
+                    self.kopecks_delta += price
+                    self.player.kopecks = (
+                        int(getattr(self.player, "kopecks", 0) or 0) + price
+                    )
         if flag:
             self.flags_set.append(flag)
             self.flags.add(flag)
+        if _is_lie_line(line) and line.get("speaker") == "player":
+            self._lied = True
+            self.standing_delta -= 1
+        elif (
+            flag
+            and str(flag).startswith("spoke_")
+            and not self._lied
+        ):
+            self.standing_delta += 1
         ending = line.get('ending_id')
         if ending:
             self.ending_id = ending
@@ -184,7 +228,16 @@ class DialogueState:
             'player': '[Вы] ',
             'narrator': '— ',
         }.get(line.get('speaker') or 'npc', '')
-        return f"{prefix}{line['text']}"
+        text = line.get("text") or ""
+        if "{price}" in text:
+            price = self._quoted_price
+            if price is None:
+                take_id = (line.get("takes_item_id") or "").strip()
+                price = quoted_price(
+                    self.player, take_id, self.standing, self.character_id
+                )
+            text = text.replace("{price}", kopeck_phrase(price))
+        return f"{prefix}{text}"
 
     def _collect_choices(self, group) -> List[Dict]:
         opts = [
@@ -276,12 +329,14 @@ class DialogueEngine:
         self.db = db_loader
         self.current_dialogue: Optional[DialogueState] = None
 
-    def start_dialogue(self, dialogue_id: str, flags=None, san: int = 100, player=None) -> bool:
+    def start_dialogue(
+        self, dialogue_id: str, flags=None, san: int = 100, player=None, standing=None
+    ) -> bool:
         data = self.db.get_dialogue(dialogue_id)
         if not data or not data['lines']:
             return False
         self.current_dialogue = DialogueState(
-            data, flags=flags, san=san, player=player
+            data, flags=flags, san=san, player=player, standing=standing
         )
         return True
 
@@ -329,8 +384,12 @@ class DialogueEngine:
         result = {
             'sanity_change': self.current_dialogue.sanity_change_total,
             'items_given': self.current_dialogue.items_given.copy(),
+            'items_taken': self.current_dialogue.items_taken.copy(),
+            'kopecks_delta': self.current_dialogue.kopecks_delta,
             'flags': list(self.current_dialogue.flags_set),
             'ending_id': self.current_dialogue.ending_id,
+            'character_id': self.current_dialogue.character_id,
+            'standing_delta': self.current_dialogue.standing_delta,
         }
         self.current_dialogue = None
         return result

@@ -15,6 +15,7 @@ from engine.constants import (
     UNARMED_DAMAGE_DIE,
 )
 from engine.equipment import EQUIP_LAYOUT, EQUIP_SLOTS, empty_fill, slot_fill_name, worn_phrase
+from engine.shop import buy_price, counter_item_value, kopeck_phrase, sell_price
 from engine.clinic_tiles import TILE_HEIGHT, TILE_WIDTH, map_glyph, wall_glyph, wall_neighbor_mask
 from engine.palette import INKS, explored_color_dicts, hex_to_rgb, visible_color_dicts
 from engine.portraits import PORTRAIT_COLS, PORTRAIT_ROWS, load_pixels
@@ -514,7 +515,7 @@ class Renderer:
         hud_h = self.screen_height - hud_y
         if hud_h < 4 or not player:
             return
-        inner = self.screen_width - 2
+        inner = max(8, self.screen_width - 4)
         engine = self.game_engine
         state = getattr(engine, "state", None)
         in_fight = state in ("combat", "ability_menu")
@@ -530,7 +531,8 @@ class Renderer:
         )
         will = f"воля {self._hp_bar(player.san, player.max_san, 10)} {player.san}"
         self.console.print(2, hud_y + 1, flesh[:inner], fg=COLOR_HP)
-        self.console.print(40, hud_y + 1, will[: max(0, inner - 38)], fg=COLOR_SANITY)
+        will_w = max(8, self.screen_width - 42)
+        self.console.print(40, hud_y + 1, will[:will_w], fg=COLOR_SANITY)
 
         quest_line = ""
         if in_fight:
@@ -544,16 +546,30 @@ class Renderer:
         chart_note = quest_line
         if marks:
             chart_note = f"{quest_line} · {marks}" if quest_line else marks
-        if chart_note:
-            self.console.print(2, hud_y + 2, chart_note[:inner], fg=COLOR_DIALOGUE)
 
-        self.console.print(1, hud_y + 3, "─" * (self.screen_width - 2), fg=COLOR_MUTED)
+        y = hud_y + 2
+        bottom = self.screen_height - 2
+        if chart_note:
+            for line in self._wrap_text(chart_note, inner)[:2]:
+                if y > bottom:
+                    break
+                self.console.print(2, y, line[:inner], fg=COLOR_DIALOGUE)
+                y += 1
+
+        if y <= bottom:
+            self.console.print(1, y, "─" * (self.screen_width - 2), fg=COLOR_MUTED)
+            y += 1
 
         messages = list(getattr(engine, "messages", None) or [])[-3:]
         if in_fight:
             messages = []
-        for i, msg in enumerate(messages):
-            self.console.print(2, hud_y + 4 + i, msg[:inner], fg=COLOR_TEXT)
+        log_lines = []
+        for msg in messages:
+            log_lines.extend(self._wrap_text(msg, inner) or [""])
+        room = max(0, bottom - y + 1)
+        for line in log_lines[-room:] if room else []:
+            self.console.print(2, y, line[:inner], fg=COLOR_TEXT)
+            y += 1
 
         if in_fight:
             hint = "1 удар · 2 глагол · 3 бежать"
@@ -945,25 +961,11 @@ class Renderer:
         )
     
     def _wrap_text(self, text: str, width: int):
-        """Перенос текста по ширине."""
-        words = text.split()
-        lines = []
-        current_line = []
-        current_len = 0
-        
-        for word in words:
-            if current_len + len(word) + 1 > width:
-                lines.append(' '.join(current_line))
-                current_line = [word]
-                current_len = len(word)
-            else:
-                current_line.append(word)
-                current_len += len(word) + 1
-        
-        if current_line:
-            lines.append(' '.join(current_line))
-        
-        return lines
+        """Перенос по ширине. Длинное слово режется, строка рамку не ест."""
+        words = (text or "").split()
+        if not words:
+            return []
+        return self._wrap_tokens(words, width)
     
     def draw_class_selection(self, classes, selected_index: int, has_save: bool = False):
         """Экран выбора класса."""
@@ -1168,6 +1170,7 @@ class Renderer:
             "r — бумага · i — карман халата",
             "t — тетрадь талантов (бой и мир)",
             "c — на себе: халат, рука, слоты",
+            "b — лавка, рядом с Лукиным",
             "при переходе — вид места · в кармане — осмотр и рука",
             "F5 — записать ночь · F9 — вернуться",
             "F4 — буквы / картинки · M — музыка",
@@ -1381,6 +1384,96 @@ class Renderer:
         self.console.print(x, y, top, fg=color)
         self.console.print(x, y + 1, body, fg=muted if fill == "пусто" else color)
         self.console.print(x, y + 2, bot, fg=color)
+
+    def draw_shop(self, player, merchant_name="", tab="sell", rows=None, selected_index=0, standing=0):
+        """Покупка и продажа. Сумма на строке, не формула."""
+        from engine.paintings import oil_id_for_item
+
+        rows = list(rows or [])
+        selected = None
+        if rows and 0 <= selected_index < len(rows):
+            selected = rows[selected_index]
+        buying = tab == "buy"
+        purse = int(getattr(player, "kopecks", 0) or 0)
+        title = f"ЛАВКА · {merchant_name or 'Лукин'}"
+        box_width = 72
+        list_rows = max(1, len(rows) + 1)
+        box_height = min(
+            self.screen_height - 2,
+            max(PORTRAIT_ROWS + 6, list_rows + 8),
+        )
+        box_x = (self.screen_width - box_width) // 2
+        box_y = (self.screen_height - box_height) // 2
+        self._draw_box(
+            box_x, box_y, box_width, box_height,
+            title=title[: box_width - 4],
+            bg=COLOR_CHART_BG,
+        )
+        text_width = box_width - PORTRAIT_COLS - 8
+        sell_mark = "[продажа]" if not buying else " продажа "
+        buy_mark = "[покупка]" if buying else " покупка "
+        self.console.print(
+            box_x + 4,
+            box_y + 2,
+            f"{sell_mark}  {buy_mark}",
+            fg=COLOR_DIALOGUE,
+        )
+        self.console.print(
+            box_x + 4,
+            box_y + 3,
+            f"в кармане {kopeck_phrase(purse)}",
+            fg=COLOR_MUTED,
+        )
+        if not rows:
+            empty = "Нечего продать." if not buying else "Пока нечего купить."
+            self.console.print(box_x + 4, box_y + 5, empty, fg=COLOR_MUTED)
+            list_bottom = box_y + 6
+        else:
+            list_bottom = box_y + 5
+            for i, item in enumerate(rows):
+                y = box_y + 5 + i
+                if y >= box_y + box_height - 4:
+                    break
+                if i == selected_index:
+                    marker, color = "· ", COLOR_DIALOGUE
+                else:
+                    marker, color = "  ", COLOR_TEXT
+                name = getattr(item, "name", "без имени")
+                if buying:
+                    price = buy_price(int(getattr(item, "value", 0) or 0), standing)
+                else:
+                    price = sell_price(counter_item_value(item), standing)
+                line = f"{marker}{name}  {kopeck_phrase(price)}"
+                self.console.print(box_x + 4, y, line[:text_width], fg=color)
+                list_bottom = y + 1
+
+        footer_y = box_y + box_height - 1
+        if selected is not None:
+            desc = getattr(selected, "description", "") or ""
+            wrap = self._wrap_text(desc, text_width)
+            shown = wrap[-2:] if wrap else []
+            for i, line in enumerate(shown):
+                self.console.print(
+                    box_x + 4,
+                    footer_y - 1 - len(shown) + i,
+                    line[:text_width],
+                    fg=COLOR_TEXT,
+                )
+            oil_x = box_x + box_width - PORTRAIT_COLS - 2
+            oil_y = box_y + (box_height - PORTRAIT_ROWS) // 2
+            self._queue_oil(
+                oil_id_for_item(getattr(selected, "id", "") or ""),
+                (oil_x, oil_y, PORTRAIT_COLS, PORTRAIT_ROWS),
+                getattr(selected, "type", "") or "",
+            )
+        verb = "купить" if buying else "продать"
+        hint = f"Tab раздел · e {verb} · b закрыть"
+        self.console.print(
+            box_x + 4,
+            footer_y,
+            hint[:text_width],
+            fg=COLOR_MUTED,
+        )
 
     def draw_oil_overlay(self, overlay):
         """Вид места при входе или вещи при осмотре. Карта .txt под холстом."""

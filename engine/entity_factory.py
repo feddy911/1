@@ -44,6 +44,7 @@ class Player:
         self.skills = dict(class_data.get('skills') or {})
         self.talents: List[str] = []
         self.equipped: Dict[str, str] = {}
+        self.kopecks = 0
         from engine.constants import UNARMED_DAMAGE_DIE
 
         self.damage_die = UNARMED_DAMAGE_DIE
@@ -297,6 +298,11 @@ class Item:
         self.use_effect = data.get('use_effect', '')
         self.content = data.get('content', '')  # Для записок
         self.equip_slot = data.get('equip_slot') or ''
+        self.look = data.get('look') or ''
+        try:
+            self.value = max(0, int(data.get('value') or 0))
+        except (TypeError, ValueError):
+            self.value = 0
         
         # Для ключей
         self.key_id = data.get('key_id')  # ID ключа в таблице keys

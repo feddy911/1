@@ -308,6 +308,12 @@ def _apply_phase1(conn) -> None:
     _apply_phase18(conn)
     _apply_phase19(conn)
     _apply_phase20(conn)
+    _apply_phase21(conn)
+    _apply_phase22(conn)
+    _apply_phase23(conn)
+    _apply_phase24(conn)
+    _apply_phase25(conn)
+    _apply_phase26(conn)
 
 
 PLACEMENTS_PHASE1: List[Tuple[str, int, int, str, str]] = [
@@ -436,7 +442,7 @@ def _seed_dialogues(conn) -> None:
             (40, "npc", "Вы уже должны мне этот вопрос. Улица не выпускает безымянных. Бумаги Шпилькина — или туман съест вас, как съел меня.", 0, 41, None, "spoke_nastasya", None),
             (41, "narrator", "Она прячет лицо в ладонях. Платье когда-то было бальным. Когда-то — это уже почти ложь.", 0, -1, None, None, None),
             (13, "player", "Имена на полу стёрты рукавом. Как выйти? Скажите, пока не стёрли и это.", 0, 50, 1, "nastasya_escape", None, "class_seeker"),
-            (14, "player", "Они шепчут уменьшительное. Это моё? Не отвечайте, если не хотите.", -4, 51, 1, None, None, "class_mystic"),
+            (14, "player", "Они зовут не тем именем, которым крестили. Это меня? Не отвечайте, если не хотите.", -4, 51, 1, None, None, "class_mystic"),
             (15, "player", "Довольно шёпота. Где дверь наружу? Говорите.", 0, 52, 1, "nastasya_escape", None, "class_rebel"),
             (50, "npc", "След верный. Бумаги немца и имя — иначе вата на востоке съест шаг. Она сытая, эта вата.", 0, -1, None, "spoke_nastasya", None),
             (51, "npc", "Если шепчут ласково — не отзывайтесь. Это не мать. Мать так не зовёт, поверьте. Я знаю.", -5, -1, None, "spoke_nastasya", None),
@@ -799,8 +805,9 @@ def _apply_phase3(conn) -> None:
             "Записка с набережной",
             "Мокрый клочок. Чернила расползлись к каналу.",
             INKS["paper"],
-            "Лизавете. Канал взял уменьшительное. Кто вспомнит долг по имени — "
-            "того туман ещё может пропустить. Может. Не обещает.",
+            "Лизавете. Канал взял имя, которым её звали в детстве. "
+            "Кто вспомнит долг по имени — того туман ещё может пропустить. "
+            "Может. Не обещает.",
         ),
     )
 
@@ -929,9 +936,9 @@ def _apply_phase3(conn) -> None:
             (11, "player", "(назвать чужое) Иван. Пусть будет Иван, если вам так надо.", 0, 30, 1, None, None),
             (12, "player", "(отдать своё, какое есть)", -8, 40, 1, None, None),
             (13, "player", "На ладони след печати. Чья печать? Скажите.", 0, 50, 1, None, None, "class_seeker"),
-            (14, "player", "Туман зовёт уменьшительным. Не берите. Ради Христа, не берите.", -4, 51, 1, None, None, "class_mystic"),
+            (14, "player", "Туман зовёт ласково, как звали в детстве. Не берите. Ради Христа, не берите.", -4, 51, 1, None, None, "class_mystic"),
             (15, "player", "Имя не милостыня. Отойдите. Отойдите же.", 0, 52, 1, None, None, "class_rebel"),
-            (16, "player", "Лизавете. Канал взял уменьшительное. Взял — и не отдаёт.", -4, 53, 1, "guilt_admitted", None, "knows_lizaveta"),
+            (16, "player", "Лизавете. Канал взял её имя. Взял — и не отдаёт.", -4, 53, 1, "guilt_admitted", None, "knows_lizaveta"),
             (20, "npc", "Тогда стойте. Стена сытая. Сытая, да-с. И я сыт вашим «не помню».", -3, -1, None, "spoke_beggar", None),
             (30, "npc", "Иван так Иван. Стена сыта любым именем. На восток — лавка, если жилец. Архив я не держу. Не держу, да-с.", 0, -1, None, "spoke_beggar", None),
             (40, "npc", "Пустая ладонь. Имя без бумаги туман не считает. Архив — на втором. На втором, барин, не здесь. Здесь только просят.", -6, -1, None, "spoke_beggar", None),
@@ -999,7 +1006,7 @@ def _apply_phase4(conn) -> None:
             (11, "player", "Чьи это папки? Скажите прямо, Клара.", -2, 30, 1, None, None),
             (12, "player", "(назвать себя, как получится)", -6, 40, 1, "archive_name", None),
             (13, "player", "На корешке свежая дата и нет фамилии. Это я?", 0, 50, 1, None, None, "class_seeker"),
-            (14, "player", "Папка зовёт уменьшительным. Не открывайте.", -3, 51, 1, None, None, "class_mystic"),
+            (14, "player", "Папка зовёт по имени, которого я здесь не называл. Не открывайте.", -3, 51, 1, None, None, "class_mystic"),
             (15, "player", "Шкаф не заперт. Отдайте моё дело.", 0, 52, 1, None, None, "class_rebel"),
             (20, "npc", "История здесь чужая. Свою прячут в кабинете, под ковром.",
              -2, -1, None, "spoke_archivist", None),
@@ -1241,8 +1248,9 @@ def _apply_phase11(conn) -> None:
         """UPDATE items SET content = ?
            WHERE id = 'note_canal'""",
         (
-            "Лизавете. Канал взял уменьшительное. Кто вспомнит долг по имени — "
-            "того туман ещё может пропустить. Может. Не обещает.",
+            "Лизавете. Канал взял имя, которым её звали в детстве. "
+            "Кто вспомнит долг по имени — того туман ещё может пропустить. "
+            "Может. Не обещает.",
         ),
     )
     conn.execute(
@@ -1781,7 +1789,7 @@ def _apply_phase17(conn) -> None:
             (11, "player", "Квартира при лавке. Кто там живёт? Скажите.", 0, 30, 1, None, None),
             (12, "player", "Я жилец. Ключ дома, вот что. Отдайте — или скажите, где лежит.", 0, 40, 1, None, None),
             (13, "player", "На прилавке протёрто, куда кладут ключи. Не в карман. Куда?", 0, 50, 1, None, None, "class_seeker"),
-            (14, "player", "Счёты щёлкают уменьшительным. Чьё? Не берите вслух.", -2, 51, 1, None, None, "class_mystic"),
+            (14, "player", "Счёты щёлкают имя, и ласковое. Чьё? Вслух не называйте.", -2, 51, 1, None, None, "class_mystic"),
             (15, "player", "Ящик открыт. Отдайте ключ. Не просите дважды.", 0, 52, 1, None, None, "class_rebel"),
             (20, "npc", "Лица знаю. Имена — по книжке, а книжка не ваша. Не ваша, слышите? Я лавочник, не архивариус. Архивариус имена выдаёт. Я — счёты. Счёты, сударь.", 0, -1, None, "spoke_lukin", None),
             (30, "npc", "При лавке квартира, да. Прасковья держит. Ключик-то жильцы в шкафу кладут, не в карман — карман врёт, шкаф тише. Я не сторож шкафа. Я считаю. Считаю, и всё.", 0, -1, None, "spoke_lukin", None),
@@ -1822,13 +1830,13 @@ def _apply_phase17(conn) -> None:
             (11, "player", "Пустите на улицу. Прошу. Улица, слышите?", 0, 30, 1, None, None),
             (12, "player", "Кого взяли в заведение? В книжке крест. Чей?", -2, 40, 1, None, None),
             (13, "player", "Чернила свежие там, где вычеркивают. Это я? Скажите.", 0, 50, 1, None, None, "class_seeker"),
-            (14, "player", "Графа зовёт уменьшительным. Не вашим — или вашим? Не отвечайте, если нельзя.", -2, 51, 1, None, None, "class_mystic"),
+            (14, "player", "Книжка зовёт по-домашнему, как своя. Не вас — или вас? Не отвечайте, если нельзя.", -2, 51, 1, None, None, "class_mystic"),
             (15, "player", "Дверь на чести. Честь я не спрашиваю. Пустите.", 0, 52, 1, None, None, "class_rebel"),
             (20, "npc", "Вижу. Знать — не скажу. Имя в архиве, не у хозяйки. Хозяйка держит комнату, не душу. Душу, сударь, вы сами засидели. Сами.", -2, -1, None, "spoke_praskovya", None),
             (30, "npc", "Без имени и без долга — никак. Никак, голубчик. Туман сытый, я сытее. Сытее, потому что кормлю жильцов и не выпускаю пустых. Пустых — обратно в халат.", 0, -1, None, "spoke_praskovya", None),
             (40, "npc", "Взяли на ночь. Имя смазали пальцем — нарочно, стыдно писать вслух. Я лиц долга знаю: кто Лизавете, кто Настасье. Вашего креста вслух не будет. Не будет, пока сами не совпадёте с бумагой.", -2, -1, None, "spoke_praskovya", None),
             (50, "npc", "Дата свежая. Фамилия — дыра. Дыра, батюшка. Подпишите себя не у меня: я книжку веду, не архив. Здесь щи и долги. Щи, сударь.", 0, -1, None, "spoke_praskovya", None),
-            (51, "npc", "Правильно, что боитесь. Кто отзовётся — того в графу, как того, кого взяли на ночь. На ночь, слышите? Уменьшительное — не вход.", -3, -1, None, "spoke_praskovya", None),
+            (51, "npc", "Правильно, что боитесь. Кто отзовётся — того в графу, как того, кого взяли на ночь. На ночь, слышите? Ласковым именем в дом не входят.", -3, -1, None, "spoke_praskovya", None),
             (52, "npc", "Честь дешевле плеча, да. Плечо дверь знает. Я всё равно держу. Держу безымянных. Безымянных и без долга. Ключик — не свобода. Свобода — два слова, вместе.", 0, -1, None, "spoke_praskovya", None),
         ],
         [
@@ -1979,7 +1987,8 @@ def _ensure_items_clothing(conn) -> None:
                 is_quest_item INTEGER DEFAULT 0,
                 use_effect TEXT,
                 content TEXT DEFAULT '',
-                equip_slot TEXT
+                equip_slot TEXT,
+                look TEXT
             )
             """
         )
@@ -1991,6 +2000,8 @@ def _ensure_items_clothing(conn) -> None:
         cols = [entry[1] for entry in conn.execute("PRAGMA table_info(items)")]
     if "equip_slot" not in cols:
         conn.execute("ALTER TABLE items ADD COLUMN equip_slot TEXT")
+    if "look" not in cols:
+        conn.execute("ALTER TABLE items ADD COLUMN look TEXT")
 
 
 def _apply_phase20(conn) -> None:
@@ -2052,4 +2063,1006 @@ def _apply_phase20(conn) -> None:
             "UPDATE player_classes SET starting_items = ? WHERE id = ?",
             (json.dumps(items, ensure_ascii=False), class_id),
         )
+
+
+def _apply_phase21(conn) -> None:
+    """Вид одежды читается. Память — тёплый флаг, не метр."""
+    _ensure_column(conn, "items", "look", "TEXT")
+    conn.execute("UPDATE items SET look = 'clinic' WHERE id = 'item_robe'")
+    conn.execute("UPDATE items SET look = 'tenant' WHERE id = 'item_coat'")
+    conn.executemany(
+        """UPDATE dialogue_lines SET requires_flag = ?
+           WHERE dialogue_id = ? AND order_num = ? AND speaker = 'npc'""",
+        (
+            ("look_clinic", "dialogue_watchman_intro", 1),
+            ("look_clinic", "dialogue_lukin_intro", 1),
+            ("look_clinic", "dialogue_praskovya_intro", 1),
+            ("look_clinic", "dialogue_watchman_repeat", 5),
+            ("look_clinic", "dialogue_lukin_repeat", 5),
+            ("look_clinic", "dialogue_praskovya_repeat", 5),
+        ),
+    )
+    conn.executemany(
+        """DELETE FROM dialogue_lines
+           WHERE dialogue_id = ? AND order_num = ?""",
+        (
+            ("dialogue_watchman_intro", 2),
+            ("dialogue_watchman_intro", 3),
+            ("dialogue_lukin_intro", 2),
+            ("dialogue_lukin_intro", 3),
+            ("dialogue_praskovya_intro", 2),
+            ("dialogue_praskovya_intro", 3),
+            ("dialogue_watchman_repeat", 0),
+            ("dialogue_watchman_repeat", 6),
+            ("dialogue_watchman_repeat", 7),
+            ("dialogue_lukin_repeat", 0),
+            ("dialogue_lukin_repeat", 6),
+            ("dialogue_lukin_repeat", 7),
+            ("dialogue_praskovya_repeat", 0),
+            ("dialogue_praskovya_repeat", 6),
+            ("dialogue_praskovya_repeat", 7),
+        ),
+    )
+    conn.executemany(
+        """INSERT INTO dialogue_lines
+           (dialogue_id, order_num, speaker, text, sanity_change, next_order,
+            choice_group, sets_flag, ending_id, requires_flag)
+           VALUES (?, ?, 'npc', ?, 0, ?, NULL, NULL, NULL, ?)""",
+        (
+            (
+                "dialogue_watchman_intro",
+                2,
+                "Сюртук вижу. Фамилии вашей не слышу, а без фамилии мне и "
+                "записать нечего. Ступайте.",
+                10,
+                "look_tenant",
+            ),
+            (
+                "dialogue_watchman_intro",
+                3,
+                "Голый, сударь: ни больной, ни жилец. Оденьтесь, покуда я добрый.",
+                10,
+                "look_bare",
+            ),
+            (
+                "dialogue_lukin_intro",
+                2,
+                "Сюртук — стало быть, жилец-с. Только в книге моей вас нет, "
+                "и подсказать мне нечего.",
+                10,
+                "look_tenant",
+            ),
+            (
+                "dialogue_lukin_intro",
+                3,
+                "Ни халата, ни сюртука. Нагишом в лавку не ходят, сударь, — "
+                "оденьтесь и приходите.",
+                10,
+                "look_bare",
+            ),
+            (
+                "dialogue_praskovya_intro",
+                2,
+                "Сюртук из моей квартиры, ткань знаю. А имени вашего в книжке нет — "
+                "без имени и без долгу на улицу не пущу.",
+                10,
+                "look_tenant",
+            ),
+            (
+                "dialogue_praskovya_intro",
+                3,
+                "Батюшка, прикройтесь. Голого я в город не выпущу — накиньте хоть казённое.",
+                10,
+                "look_bare",
+            ),
+            (
+                "dialogue_watchman_repeat",
+                0,
+                "Вас я уже видел: лицо помню, фамилию — нет. Ступайте, Петров нынче добрый.",
+                10,
+                "warm_watchman_petrov",
+            ),
+            (
+                "dialogue_watchman_repeat",
+                6,
+                "Сюртук тот же, фамилии всё нет. Ступайте.",
+                10,
+                "look_tenant",
+            ),
+            (
+                "dialogue_watchman_repeat",
+                7,
+                "Опять без ткани. Оденьтесь, сударь: свисток недолго молчит.",
+                10,
+                "look_bare",
+            ),
+            (
+                "dialogue_lukin_repeat",
+                0,
+                "Шаг ваш узнаю. Имени так и не знаю, а шаг узнаю.",
+                10,
+                "warm_shopkeeper_lukin",
+            ),
+            (
+                "dialogue_lukin_repeat",
+                6,
+                "Сюртук тот же. Вы чуть меньше чужой, да-с.",
+                10,
+                "look_tenant",
+            ),
+            (
+                "dialogue_lukin_repeat",
+                7,
+                "Опять нагишом. Прикройтесь, тут за крупой ходят.",
+                10,
+                "look_bare",
+            ),
+            (
+                "dialogue_praskovya_repeat",
+                0,
+                "Вас я держала и держу. Имя да про долг — тогда и поговорим.",
+                10,
+                "warm_landlady_praskovya",
+            ),
+            (
+                "dialogue_praskovya_repeat",
+                6,
+                "Опять сюртук, а в книжке всё то же. Сидите, батюшка.",
+                10,
+                "look_tenant",
+            ),
+            (
+                "dialogue_praskovya_repeat",
+                7,
+                "Опять без ткани. У меня жильцы, батюшка, оденьтесь.",
+                10,
+                "look_bare",
+            ),
+        ),
+    )
+
+
+def _apply_phase22(conn) -> None:
+    """Нож виден. Лукин отказывает речью, не новым замком."""
+    conn.execute(
+        """UPDATE dialogue_lines SET requires_flag = 'look_tenant'
+           WHERE dialogue_id = 'dialogue_lukin_repeat'
+             AND order_num = 20 AND speaker = 'npc'"""
+    )
+    conn.execute(
+        """UPDATE dialogue_lines SET requires_flag = 'look_clinic'
+           WHERE dialogue_id = 'dialogue_lukin_repeat'
+             AND order_num = 40 AND speaker = 'npc'"""
+    )
+    conn.executemany(
+        """DELETE FROM dialogue_lines
+           WHERE dialogue_id = ? AND order_num = ?""",
+        (
+            ("dialogue_watchman_intro", 0),
+            ("dialogue_lukin_intro", 0),
+            ("dialogue_praskovya_intro", 0),
+            ("dialogue_panteleimon_intro", 0),
+            ("dialogue_panteleimon_repeat", 0),
+            ("dialogue_watchman_repeat", 8),
+            ("dialogue_lukin_repeat", 8),
+            ("dialogue_praskovya_repeat", 8),
+            ("dialogue_lukin_repeat", 21),
+            ("dialogue_lukin_repeat", 22),
+            ("dialogue_lukin_repeat", 23),
+            ("dialogue_lukin_repeat", 24),
+            ("dialogue_lukin_repeat", 25),
+            ("dialogue_lukin_repeat", 41),
+            ("dialogue_lukin_repeat", 42),
+            ("dialogue_lukin_repeat", 43),
+            ("dialogue_lukin_repeat", 44),
+            ("dialogue_lukin_repeat", 45),
+        ),
+    )
+    conn.executemany(
+        """INSERT INTO dialogue_lines
+           (dialogue_id, order_num, speaker, text, sanity_change, next_order,
+            choice_group, sets_flag, ending_id, requires_flag)
+           VALUES (?, ?, 'npc', ?, 0, ?, NULL, NULL, NULL, ?)""",
+        (
+            (
+                "dialogue_watchman_intro",
+                0,
+                "Нож вижу прежде всякой ткани. Спрячьте, покуда свисток молчит.",
+                10,
+                "armed",
+            ),
+            (
+                "dialogue_lukin_intro",
+                0,
+                "Нож вижу раньше сюртука. Спрячьте, сударь, у меня тут крупу берут.",
+                10,
+                "armed",
+            ),
+            (
+                "dialogue_praskovya_intro",
+                0,
+                "Нож в моей квартире? Спрячьте сейчас же, батюшка, у меня жильцы.",
+                10,
+                "armed",
+            ),
+            (
+                "dialogue_panteleimon_intro",
+                0,
+                "Нож, барин... Уберите, Христа ради. Я ничего не видел.",
+                10,
+                "armed",
+            ),
+            (
+                "dialogue_panteleimon_repeat",
+                0,
+                "Опять нож, барин. Я ничего не говорил — уберите.",
+                10,
+                "armed",
+            ),
+            (
+                "dialogue_watchman_repeat",
+                8,
+                "Опять нож. Лицо я помню, а руку вашу помнить не хочу. Спрячьте.",
+                10,
+                "armed",
+            ),
+            (
+                "dialogue_lukin_repeat",
+                8,
+                "Опять железо. Шаг ваш помню, а нож мне ни к чему.",
+                10,
+                "armed",
+            ),
+            (
+                "dialogue_praskovya_repeat",
+                8,
+                "Опять нож. Спрячьте, батюшка, или сидите как сидели.",
+                10,
+                "armed",
+            ),
+            (
+                "dialogue_lukin_repeat",
+                21,
+                "Халату не торгую-с. Ключ не товар, батюшка, — унесите, откуда взяли.",
+                -1,
+                "look_clinic",
+            ),
+            (
+                "dialogue_lukin_repeat",
+                22,
+                "Нагишом ключа не дам. Оденьтесь, тогда и говорите.",
+                -1,
+                "look_bare",
+            ),
+            (
+                "dialogue_lukin_repeat",
+                23,
+                "Ключ в шкафу, куда жильцы кладут. Только железо сперва спрячьте.",
+                -1,
+                "look_tenant_armed",
+            ),
+            (
+                "dialogue_lukin_repeat",
+                24,
+                "Халату с ножом не торгую-с. Ступайте, батюшка.",
+                -1,
+                "look_clinic_armed",
+            ),
+            (
+                "dialogue_lukin_repeat",
+                25,
+                "Голый, да ещё с ножом. Ступайте, сударь, покуда я молчу.",
+                -1,
+                "look_bare_armed",
+            ),
+            (
+                "dialogue_lukin_repeat",
+                41,
+                "Сюртук ваш — ступайте наверх, ключ в шкафу. Я вам не провожатый-с.",
+                -1,
+                "look_tenant",
+            ),
+            (
+                "dialogue_lukin_repeat",
+                42,
+                "Голым на чужую лестницу? Оденьтесь хоть в казённое, тогда и наверх.",
+                -1,
+                "look_bare",
+            ),
+            (
+                "dialogue_lukin_repeat",
+                43,
+                "Халат да нож. С железом наверх не пущу, и не просите.",
+                -1,
+                "look_clinic_armed",
+            ),
+            (
+                "dialogue_lukin_repeat",
+                44,
+                "Сюртук ваш, а нож уберите. Тогда и к шкафу — не ко мне.",
+                -1,
+                "look_tenant_armed",
+            ),
+            (
+                "dialogue_lukin_repeat",
+                45,
+                "Голый и с ножом. Прикройтесь, железо спрячьте — после поговорим.",
+                -1,
+                "look_bare_armed",
+            ),
+        ),
+    )
+
+
+def _apply_phase23(conn) -> None:
+    """Нож, ключ, записка — ветка в разговоре, не бонус к говорить."""
+    conn.executemany(
+        """DELETE FROM dialogue_lines
+           WHERE dialogue_id = ? AND order_num = ?""",
+        (
+            ("dialogue_lukin_intro", 16),
+            ("dialogue_lukin_intro", 17),
+            ("dialogue_lukin_intro", 18),
+            ("dialogue_lukin_intro", 60),
+            ("dialogue_lukin_intro", 61),
+            ("dialogue_lukin_intro", 62),
+            ("dialogue_lukin_repeat", 16),
+            ("dialogue_lukin_repeat", 17),
+            ("dialogue_lukin_repeat", 18),
+            ("dialogue_lukin_repeat", 60),
+            ("dialogue_lukin_repeat", 61),
+            ("dialogue_lukin_repeat", 62),
+            ("dialogue_praskovya_intro", 16),
+            ("dialogue_praskovya_intro", 17),
+            ("dialogue_praskovya_intro", 60),
+            ("dialogue_praskovya_intro", 61),
+            ("dialogue_praskovya_repeat", 17),
+            ("dialogue_praskovya_repeat", 18),
+            ("dialogue_praskovya_repeat", 60),
+            ("dialogue_praskovya_repeat", 61),
+            ("dialogue_panteleimon_intro", 16),
+            ("dialogue_panteleimon_intro", 17),
+            ("dialogue_panteleimon_intro", 60),
+            ("dialogue_panteleimon_intro", 61),
+            ("dialogue_panteleimon_repeat", 17),
+            ("dialogue_panteleimon_repeat", 18),
+            ("dialogue_panteleimon_repeat", 60),
+            ("dialogue_panteleimon_repeat", 61),
+        ),
+    )
+    conn.executemany(
+        """INSERT INTO dialogue_lines
+           (dialogue_id, order_num, speaker, text, sanity_change, next_order,
+            choice_group, sets_flag, ending_id, requires_flag)
+           VALUES (?, ?, ?, ?, 0, ?, ?, ?, NULL, ?)""",
+        (
+            (
+                "dialogue_lukin_intro",
+                16,
+                "player",
+                "Кладу нож на прилавок. Не в вас, Лукин, — на дерево.",
+                60,
+                1,
+                None,
+                "have_item_knife",
+            ),
+            (
+                "dialogue_lukin_intro",
+                17,
+                "player",
+                "Вот ключ от квартиры. Из шкафа, как сказали.",
+                61,
+                1,
+                None,
+                "have_key_tenement",
+            ),
+            (
+                "dialogue_lukin_intro",
+                18,
+                "player",
+                "Бумага с канала. Лизавета. Это долг, Лукин.",
+                62,
+                1,
+                None,
+                "have_note_canal",
+            ),
+            (
+                "dialogue_lukin_intro",
+                60,
+                "npc",
+                "Уберите железо, сударь. Халату за нож не плачу-с.",
+                -1,
+                None,
+                "spoke_lukin",
+                None,
+            ),
+            (
+                "dialogue_lukin_intro",
+                61,
+                "npc",
+                "Ключ вижу-с, а вас в книге моей нет. Несите Прасковье, ключ её.",
+                -1,
+                None,
+                "spoke_lukin",
+                None,
+            ),
+            (
+                "dialogue_lukin_intro",
+                62,
+                "npc",
+                "Канал мне не лавка-с. Долг этот Лизаветин, батюшка, — с ним не ко мне.",
+                -1,
+                None,
+                "spoke_lukin",
+                None,
+            ),
+            (
+                "dialogue_lukin_repeat",
+                16,
+                "player",
+                "Кладу нож на прилавок. Опять. Смотрите.",
+                60,
+                1,
+                None,
+                "have_item_knife",
+            ),
+            (
+                "dialogue_lukin_repeat",
+                17,
+                "player",
+                "Вот ключ от квартиры. Из шкафа.",
+                61,
+                1,
+                None,
+                "have_key_tenement",
+            ),
+            (
+                "dialogue_lukin_repeat",
+                18,
+                "player",
+                "Бумага с канала. Лизавета. Долг.",
+                62,
+                1,
+                None,
+                "have_note_canal",
+            ),
+            (
+                "dialogue_lukin_repeat",
+                60,
+                "npc",
+                "Опять нож. Уберите, сударь, не куплю-с.",
+                -1,
+                None,
+                None,
+                None,
+            ),
+            (
+                "dialogue_lukin_repeat",
+                61,
+                "npc",
+                "Ключ тот же. Я его не выдавал — несите Прасковье.",
+                -1,
+                None,
+                None,
+                None,
+            ),
+            (
+                "dialogue_lukin_repeat",
+                62,
+                "npc",
+                "Опять бумага. В долг не даю-с, и чужого долга не беру.",
+                -1,
+                None,
+                None,
+                None,
+            ),
+            (
+                "dialogue_praskovya_intro",
+                16,
+                "player",
+                "Ключ квартиры. Вот он. Пустите — или скажите, кто я.",
+                60,
+                1,
+                None,
+                "have_key_tenement",
+            ),
+            (
+                "dialogue_praskovya_intro",
+                17,
+                "player",
+                "Записка с канала. Лизавете. Долг на бумаге, не в книжке.",
+                61,
+                1,
+                None,
+                "have_note_canal",
+            ),
+            (
+                "dialogue_praskovya_intro",
+                60,
+                "npc",
+                "Ключ без лица, батюшка. Мне имя надобно: имени нет — сидите.",
+                -1,
+                None,
+                "spoke_praskovya",
+                None,
+            ),
+            (
+                "dialogue_praskovya_intro",
+                61,
+                "npc",
+                "Бумага — не имя, батюшка. Долг свой скажите сами, а канал не моя забота.",
+                -1,
+                None,
+                "spoke_praskovya",
+                None,
+            ),
+            (
+                "dialogue_praskovya_repeat",
+                17,
+                "player",
+                "Ключ квартиры. Вот он опять.",
+                60,
+                1,
+                None,
+                "have_key_tenement",
+            ),
+            (
+                "dialogue_praskovya_repeat",
+                18,
+                "player",
+                "Записка с канала. Лизавете. Опять.",
+                61,
+                1,
+                None,
+                "have_note_canal",
+            ),
+            (
+                "dialogue_praskovya_repeat",
+                60,
+                "npc",
+                "Опять ключ. В книжке всё то же, батюшка.",
+                -1,
+                None,
+                None,
+                None,
+            ),
+            (
+                "dialogue_praskovya_repeat",
+                61,
+                "npc",
+                "Опять бумага. Сперва имя, потом улица.",
+                -1,
+                None,
+                None,
+                None,
+            ),
+            (
+                "dialogue_panteleimon_intro",
+                16,
+                "player",
+                "Бумага. С канала. Лизавета. Вы знаете.",
+                60,
+                1,
+                None,
+                "have_note_canal",
+            ),
+            (
+                "dialogue_panteleimon_intro",
+                17,
+                "player",
+                "Кладу нож. Не вас резать. Видите.",
+                61,
+                1,
+                None,
+                "have_item_knife",
+            ),
+            (
+                "dialogue_panteleimon_intro",
+                60,
+                "npc",
+                "Бумагу видел, барин. Только я вам ничего не говорил — ни про канал, "
+                "ни про Лизавету.",
+                -1,
+                None,
+                "spoke_panteleimon",
+                None,
+            ),
+            (
+                "dialogue_panteleimon_intro",
+                61,
+                "npc",
+                "Не доставайте его при мне, барин. После железа тут ключи прячут.",
+                -1,
+                None,
+                "spoke_panteleimon",
+                None,
+            ),
+            (
+                "dialogue_panteleimon_repeat",
+                17,
+                "player",
+                "Бумага с канала. Опять. Лизавета.",
+                60,
+                1,
+                None,
+                "have_note_canal",
+            ),
+            (
+                "dialogue_panteleimon_repeat",
+                18,
+                "player",
+                "Кладу нож. Опять. Не вас.",
+                61,
+                1,
+                None,
+                "have_item_knife",
+            ),
+            (
+                "dialogue_panteleimon_repeat",
+                60,
+                "npc",
+                "Бумагу знаю, барин. Я ничего не говорил.",
+                -1,
+                None,
+                None,
+                None,
+            ),
+            (
+                "dialogue_panteleimon_repeat",
+                61,
+                "npc",
+                "Опять нож, барин. Я ничего не видел.",
+                -1,
+                None,
+                None,
+                None,
+            ),
+        ),
+    )
+
+
+def _apply_phase24(conn) -> None:
+    """Три занятия — три ночи. Те же люди, вторая строка до выбора."""
+    conn.executemany(
+        """UPDATE dialogue_lines SET next_order = 4
+           WHERE dialogue_id = ? AND order_num = ? AND speaker = 'npc'""",
+        (
+            ("dialogue_watchman_intro", 0),
+            ("dialogue_watchman_intro", 1),
+            ("dialogue_watchman_intro", 2),
+            ("dialogue_watchman_intro", 3),
+            ("dialogue_lukin_intro", 0),
+            ("dialogue_lukin_intro", 1),
+            ("dialogue_lukin_intro", 2),
+            ("dialogue_lukin_intro", 3),
+            ("dialogue_praskovya_intro", 0),
+            ("dialogue_praskovya_intro", 1),
+            ("dialogue_praskovya_intro", 2),
+            ("dialogue_praskovya_intro", 3),
+            ("dialogue_panteleimon_intro", 0),
+            ("dialogue_panteleimon_intro", 1),
+            ("dialogue_shpilkin_intro", 2),
+            ("dialogue_nastasya_intro", 2),
+        ),
+    )
+    conn.executemany(
+        """DELETE FROM dialogue_lines
+           WHERE dialogue_id = ? AND order_num = ?""",
+        tuple(
+            (did, n)
+            for did in (
+                "dialogue_watchman_intro",
+                "dialogue_lukin_intro",
+                "dialogue_praskovya_intro",
+                "dialogue_panteleimon_intro",
+                "dialogue_shpilkin_intro",
+                "dialogue_nastasya_intro",
+            )
+            for n in (4, 5, 6)
+        ),
+    )
+    conn.executemany(
+        """INSERT INTO dialogue_lines
+           (dialogue_id, order_num, speaker, text, sanity_change, next_order,
+            choice_group, sets_flag, ending_id, requires_flag)
+           VALUES (?, ?, 'npc', ?, 0, 10, NULL, NULL, NULL, ?)""",
+        (
+            (
+                "dialogue_watchman_intro",
+                4,
+                "Глядите, будто протокол читаете. Записать всё равно нечего — ступайте.",
+                "class_seeker",
+            ),
+            (
+                "dialogue_watchman_intro",
+                5,
+                "Стоите, будто слушаете кого за спиной. Не оборачивайтесь, сударь.",
+                "class_mystic",
+            ),
+            (
+                "dialogue_watchman_intro",
+                6,
+                "Плечо у вас привычное к дверям. Его я запомню раньше фамилии.",
+                "class_rebel",
+            ),
+            (
+                "dialogue_lukin_intro",
+                4,
+                "Пыль на прилавке разглядываете, не товар. Ключ всё равно в шкафу, сударь.",
+                "class_seeker",
+            ),
+            (
+                "dialogue_lukin_intro",
+                5,
+                "Счёты щёлкнули — вы вздрогнули. Не отвечайте им, сударь.",
+                "class_mystic",
+            ),
+            (
+                "dialogue_lukin_intro",
+                6,
+                "На ящик смотрите, не на меня. Он для людей открыт, не для вас.",
+                "class_rebel",
+            ),
+            (
+                "dialogue_praskovya_intro",
+                4,
+                "Чернила ещё свежие, и вы это заметили. Вычеркнуто не ваше имя, батюшка.",
+                "class_seeker",
+            ),
+            (
+                "dialogue_praskovya_intro",
+                5,
+                "Вы к тишине прислушиваетесь. Не отзывайтесь, коли позовут ласково.",
+                "class_mystic",
+            ),
+            (
+                "dialogue_praskovya_intro",
+                6,
+                "Дверь у меня на честном слове держится. Плечом её не проверяйте.",
+                "class_rebel",
+            ),
+            (
+                "dialogue_panteleimon_intro",
+                4,
+                "Царапины заметили. От пояса, барин. Только не говорите никому.",
+                "class_seeker",
+            ),
+            (
+                "dialogue_panteleimon_intro",
+                5,
+                "Вы слышите, как за стеной шепчут. Не отвечайте, барин, Христа ради.",
+                "class_mystic",
+            ),
+            (
+                "dialogue_panteleimon_intro",
+                6,
+                "Вы бы дверь плечом взяли, вижу. Кто так берёт, того вниз сносят.",
+                "class_rebel",
+            ),
+            (
+                "dialogue_shpilkin_intro",
+                4,
+                "Глаза у вас как у следователя. Читайте бумаги, не меня.",
+                "class_seeker",
+            ),
+            (
+                "dialogue_shpilkin_intro",
+                5,
+                "Вы вслушиваетесь в угол. Я тоже, и капель поэтому не пью.",
+                "class_mystic",
+            ),
+            (
+                "dialogue_shpilkin_intro",
+                6,
+                "Плечо у вас привычное. Здесь двери ключом, не плечом.",
+                "class_rebel",
+            ),
+            (
+                "dialogue_nastasya_intro",
+                4,
+                "Имена на полу — вы правильно смотрите. Бумаги у немца, прочее вата.",
+                "class_seeker",
+            ),
+            (
+                "dialogue_nastasya_intro",
+                5,
+                "Они зовут вас, как мать звала. Это не мать. Не отзывайтесь.",
+                "class_mystic",
+            ),
+            (
+                "dialogue_nastasya_intro",
+                6,
+                "Дверь на улицу есть. Только туман плечом не выломать — правдой.",
+                "class_rebel",
+            ),
+        ),
+    )
+
+
+def _apply_phase25(conn) -> None:
+    """Прилавок Лукина: цена в реплике. Не витрина и не десятый ответ."""
+    _ensure_column(conn, "items", "value", "INTEGER DEFAULT 0")
+    _ensure_column(conn, "dialogue_lines", "takes_item_id", "TEXT")
+    conn.executemany(
+        "UPDATE items SET value = ? WHERE id = ?",
+        (
+            (3, "item_knife"),
+            (4, "potion_heal"),
+            (5, "potion_sanity"),
+        ),
+    )
+    conn.execute(
+        """UPDATE items SET value = 0
+           WHERE type IN ('key', 'note') OR is_quest_item = 1"""
+    )
+    conn.executemany(
+        "UPDATE items SET value = ? WHERE id = ?",
+        (
+            (3, "item_knife"),
+            (4, "potion_heal"),
+            (5, "potion_sanity"),
+        ),
+    )
+    conn.executemany(
+        """DELETE FROM dialogue_lines
+           WHERE dialogue_id = ? AND order_num = ?""",
+        tuple(
+            (did, n)
+            for did in ("dialogue_lukin_intro", "dialogue_lukin_repeat")
+            for n in (70, 71, 72, 73, 74, 75)
+        ),
+    )
+    conn.executemany(
+        """UPDATE dialogue_lines SET next_order = 70
+           WHERE dialogue_id = ? AND order_num = 16 AND speaker = 'player'""",
+        (("dialogue_lukin_intro",), ("dialogue_lukin_repeat",)),
+    )
+    conn.executemany(
+        """INSERT INTO dialogue_lines
+           (dialogue_id, order_num, speaker, text, sanity_change, next_order,
+            choice_group, sets_flag, ending_id, requires_flag, takes_item_id)
+           VALUES (?, ?, 'npc', ?, 0, ?, NULL, ?, NULL, ?, ?)""",
+        (
+            (
+                "dialogue_lukin_intro",
+                70,
+                "Уберите железо, батюшка. Халату я за нож не плачу-с.",
+                -1,
+                "spoke_lukin",
+                "look_clinic",
+                None,
+            ),
+            (
+                "dialogue_lukin_intro",
+                71,
+                "Ржавый-с, пустяки. {price} — вот получите.",
+                -1,
+                "spoke_lukin",
+                "look_tenant",
+                "item_knife",
+            ),
+            (
+                "dialogue_lukin_intro",
+                72,
+                "Нагишом, да с ножом. Оденьтесь, батюшка, тогда и поговорим.",
+                -1,
+                "spoke_lukin",
+                "look_bare",
+                None,
+            ),
+            (
+                "dialogue_lukin_intro",
+                73,
+                "Халат, и нож в руке. Не плачу-с, уберите железо.",
+                -1,
+                "spoke_lukin",
+                "look_clinic_armed",
+                None,
+            ),
+            (
+                "dialogue_lukin_intro",
+                74,
+                "Положите на прилавок-с. {price} — вот получите.",
+                -1,
+                "spoke_lukin",
+                "look_tenant_armed",
+                "item_knife",
+            ),
+            (
+                "dialogue_lukin_intro",
+                75,
+                "Голый, и железо в руке. Не торгую-с. Ступайте.",
+                -1,
+                "spoke_lukin",
+                "look_bare_armed",
+                None,
+            ),
+            (
+                "dialogue_lukin_repeat",
+                70,
+                "Опять нож. Халату не плачу-с, уберите.",
+                -1,
+                None,
+                "look_clinic",
+                None,
+            ),
+            (
+                "dialogue_lukin_repeat",
+                71,
+                "Опять ржавый. {price}-с, получите.",
+                -1,
+                None,
+                "look_tenant",
+                "item_knife",
+            ),
+            (
+                "dialogue_lukin_repeat",
+                72,
+                "Опять нагишом. Не торгую-с. Ступайте.",
+                -1,
+                None,
+                "look_bare",
+                None,
+            ),
+            (
+                "dialogue_lukin_repeat",
+                73,
+                "Опять халат с ножом. Не плачу-с. Уберите.",
+                -1,
+                None,
+                "look_clinic_armed",
+                None,
+            ),
+            (
+                "dialogue_lukin_repeat",
+                74,
+                "Опять с руки. Положите-с: {price}.",
+                -1,
+                None,
+                "look_tenant_armed",
+                "item_knife",
+            ),
+            (
+                "dialogue_lukin_repeat",
+                75,
+                "Опять голый, опять с ножом. Не торгую-с.",
+                -1,
+                None,
+                "look_bare_armed",
+                None,
+            ),
+        ),
+    )
+
+
+def _apply_phase26(conn) -> None:
+    """Торг в лавке. В разговоре Лукин ртом не считает."""
+    conn.executemany(
+        """UPDATE dialogue_lines
+           SET text = ?, takes_item_id = NULL
+           WHERE dialogue_id = ? AND order_num = ?""",
+        (
+            (
+                "Ржавый-с, пустяки. Кладите на прилавок — погляжу, что за него дам.",
+                "dialogue_lukin_intro",
+                71,
+            ),
+            (
+                "С руки не беру, сударь. Коли продаёте — на прилавок, погляжу.",
+                "dialogue_lukin_intro",
+                74,
+            ),
+            (
+                "Опять ржавый. Кладите, батюшка, — погляжу.",
+                "dialogue_lukin_repeat",
+                71,
+            ),
+            (
+                "Опять с руки. На прилавок, сударь, — тогда погляжу.",
+                "dialogue_lukin_repeat",
+                74,
+            ),
+        ),
+    )
+
 
